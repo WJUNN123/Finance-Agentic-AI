@@ -217,10 +217,12 @@ FINBERT_PIPE = None
 
 def load_finbert_pipeline():
     global FINBERT_PIPE
-    kwargs = {}
-    if HF_TOKEN:
-        kwargs["use_auth_token"] = True
-    FINBERT_PIPE = pipeline("sentiment-analysis", model=FINBERT_MODEL, tokenizer=FINBERT_MODEL, device=PIPELINE_DEVICE, **kwargs)
+    FINBERT_PIPE = pipeline(
+        "sentiment-analysis",
+        model=FINBERT_MODEL,
+        tokenizer=FINBERT_MODEL,
+        device=PIPELINE_DEVICE
+    )
     return FINBERT_PIPE
 
 def run_finbert(headlines: List[str]) -> List[Dict]:
