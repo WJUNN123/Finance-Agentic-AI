@@ -14,9 +14,6 @@
 # ---------------------------------------------------------------------------------
 
 import os
-os.environ["TRANSFORMERS_NO_TF"] = "1"
-os.environ["USE_TF"] = "0"
-
 import re
 import time
 import math
@@ -34,16 +31,20 @@ import sqlite3
 import joblib
 import io
 
+# UI
 import streamlit as st
 
-from transformers import pipeline         # <- now safe, after env vars
+# ML / NLP libs
+from transformers import pipeline
 from huggingface_hub import login as hf_login
+
+# Prophet
 from prophet import Prophet
 
-# Only AFTER transformers import, bring in TensorFlow/Keras:
-import torch
-import torch.nn as nn
-import torch.optim as optim
+# TensorFlow for LSTM
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 from sklearn.preprocessing import MinMaxScaler
 
 # Optional: sentence-transformers + faiss for embeddings and retrieval
@@ -219,16 +220,9 @@ def load_finbert_pipeline():
     kwargs = {}
     if HF_TOKEN:
         kwargs["use_auth_token"] = True
-    FINBERT_PIPE = pipeline(
-        "sentiment-analysis",
-        model=FINBERT_MODEL,
-        tokenizer=FINBERT_MODEL,
-        framework="pt",     # <- force PyTorch backend
-        device=PIPELINE_DEVICE,
-        **kwargs
-    )
+    FINBERT_PIPE = pipeline("sentiment-analysis", model=FINBERT_MODEL, tokenizer=FINBERT_MODEL, device=PIPELINE_DEVICE, **kwargs)
     return FINBERT_PIPE
-    
+
 def run_finbert(headlines: List[str]) -> List[Dict]:
     global FINBERT_PIPE
     if not headlines:
@@ -299,76 +293,20 @@ def forecast_with_prophet(price_series: pd.Series, days: int = 7) -> Tuple[pd.Da
 # ---------------------------
 # LSTM forecasting
 # ---------------------------
-class LSTMRegressor(nn.Module):
-    def __init__(self, input_size=1, hidden1=64, hidden2=32, dropout=0.1):
-        super().__init__()
-        self.lstm1 = nn.LSTM(input_size, hidden1, batch_first=True)
-        self.drop1 = nn.Dropout(dropout)
-        self.lstm2 = nn.LSTM(hidden1, hidden2, batch_first=True)
-        self.drop2 = nn.Dropout(dropout)
-        self.fc = nn.Linear(hidden2, 1)
-
-    def forward(self, x):
-        x, _ = self.lstm1(x)
-        x = self.drop1(x)
-        x, _ = self.lstm2(x)
-        x = self.drop2(x[:, -1, :])  # last timestep
-        return self.fc(x)
-
 def build_lstm_model(input_shape):
-    # input_shape=(window, 1) -> not needed explicitly in torch init
-    return LSTMRegressor()
-
-def _torch_train(model, X_train, y_train, X_val, y_val, epochs=20, batch_size=16, lr=1e-3, device="cpu"):
-    model.to(device)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-
-    def to_tensor(x): return torch.tensor(x, dtype=torch.float32).to(device)
-
-    X_train_t = to_tensor(X_train); y_train_t = to_tensor(y_train).view(-1, 1)
-    X_val_t   = to_tensor(X_val);   y_val_t   = to_tensor(y_val).view(-1, 1)
-
-    n = X_train_t.shape[0]
-    best_val = float("inf")
-    patience, patience_left = 5, 5
-
-    for ep in range(epochs):
-        model.train()
-        perm = torch.randperm(n)
-        for i in range(0, n, batch_size):
-            idx = perm[i:i+batch_size]
-            xb = X_train_t[idx]
-            yb = y_train_t[idx]
-            optimizer.zero_grad()
-            pred = model(xb)
-            loss = criterion(pred, yb)
-            loss.backward()
-            optimizer.step()
-
-        model.eval()
-        with torch.no_grad():
-            val_pred = model(X_val_t)
-            val_loss = criterion(val_pred, y_val_t).item()
-        # simple early stopping
-        if val_loss + 1e-9 < best_val:
-            best_val = val_loss
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            patience_left = patience
-        else:
-            patience_left -= 1
-            if patience_left == 0:
-                break
-
-    # restore best
-    model.load_state_dict(best_state)
-    model.to("cpu")
+    model = Sequential()
+    model.add(LSTM(64, input_shape=input_shape, return_sequences=True))
+    model.add(Dropout(0.1))
+    model.add(LSTM(32, return_sequences=False))
+    model.add(Dropout(0.1))
+    model.add(Dense(1, activation="linear"))
+    model.compile(optimizer="adam", loss="mse")
     return model
 
 def train_and_forecast_lstm(price_series: pd.Series,
                             horizon: int = 7,
-                            window: int = 30,
-                            epochs: int = 20):
+                            window: int = LSTM_WINDOW,
+                            epochs: int = LSTM_EPOCHS):
     if price_series is None or len(price_series) < window + 10:
         return []
 
@@ -380,27 +318,24 @@ def train_and_forecast_lstm(price_series: pd.Series,
     for i in range(window, len(scaled)):
         X.append(scaled[i - window:i])
         y.append(scaled[i])
-    X = np.array(X).reshape(-1, window, 1)
-    y = np.array(y)
+    X, y = np.array(X), np.array(y)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
 
     split = int(len(X) * 0.9)
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
 
     model = build_lstm_model((window, 1))
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = _torch_train(model, X_train, y_train, X_val, y_val, epochs=epochs, batch_size=16, lr=1e-3, device=device)
+    es = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
+    model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=epochs, batch_size=LSTM_BATCH, callbacks=[es], verbose=0)
 
-    # iterative forecasting
     preds_scaled = []
     last_window = scaled[-window:].tolist()
-    model.eval()
-    with torch.no_grad():
-        for _ in range(horizon):
-            x_in = torch.tensor(np.array(last_window[-window:]).reshape(1, window, 1), dtype=torch.float32)
-            yhat = model(x_in).cpu().numpy()[0, 0]
-            preds_scaled.append(yhat)
-            last_window.append(yhat)
+    for _ in range(horizon):
+        x_in = np.array(last_window[-window:]).reshape((1, window, 1))
+        yhat = model.predict(x_in, verbose=0)[0][0]
+        preds_scaled.append(yhat)
+        last_window.append(yhat)
 
     preds = scaler.inverse_transform(np.array(preds_scaled).reshape(-1, 1)).flatten().tolist()
     return preds
