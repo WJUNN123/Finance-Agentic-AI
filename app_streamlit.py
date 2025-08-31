@@ -35,6 +35,9 @@ import io
 import streamlit as st
 
 # ML / NLP libs
+import os
+# Force Transformers to NOT use TensorFlow/Keras at all
+os.environ["TRANSFORMERS_NO_TF"] = "1"
 from transformers import pipeline
 from huggingface_hub import login as hf_login
 
@@ -220,17 +223,16 @@ def load_finbert_pipeline():
     kwargs = {}
     if HF_TOKEN:
         kwargs["use_auth_token"] = True
-    # Force pipeline to use PyTorch backend instead of TensorFlow/Keras
     FINBERT_PIPE = pipeline(
         "sentiment-analysis",
         model=FINBERT_MODEL,
         tokenizer=FINBERT_MODEL,
+        framework="pt",     # <- force PyTorch backend
         device=PIPELINE_DEVICE,
-        framework="pt",  
         **kwargs
     )
     return FINBERT_PIPE
-
+    
 def run_finbert(headlines: List[str]) -> List[Dict]:
     global FINBERT_PIPE
     if not headlines:
