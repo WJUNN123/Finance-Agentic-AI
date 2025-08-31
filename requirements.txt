@@ -1,13 +1,13 @@
 streamlit==1.49.1
-requests
-feedparser
+requests>=2.31
+feedparser==6.0.11
 pandas==2.3.2
 numpy==2.3.2
 matplotlib==3.10.6
 prophet==1.1.7
 scikit-learn==1.7.1
 joblib==1.5.2
-huggingface-hub>=0.34
+huggingface-hub>=0.23
 transformers==4.41.2
 torch==2.8.0
 sentence-transformers==5.1.0
