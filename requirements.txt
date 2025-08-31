@@ -9,11 +9,13 @@ scikit-learn
 joblib
 huggingface-hub>=0.23
 transformers==4.41.2
-torch        # CPU-only is fine on Streamlit Cloud
+torch
+
+# optional features your app uses
 sentence-transformers
 faiss-cpu
 shap
 
-# For your LSTM only; pinned to avoid Keras 3:
+# only for your LSTM; pinned to avoid Keras 3
 tensorflow==2.15.0
 tf-keras==2.15.0
