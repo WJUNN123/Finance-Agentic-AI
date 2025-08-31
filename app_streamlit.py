@@ -14,6 +14,9 @@
 # ---------------------------------------------------------------------------------
 
 import os
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+os.environ["USE_TF"] = "0"
+
 import re
 import time
 import math
@@ -31,20 +34,13 @@ import sqlite3
 import joblib
 import io
 
-# UI
 import streamlit as st
 
-# ML / NLP libs
-import os
-# Force Transformers to NOT use TensorFlow/Keras at all
-os.environ["TRANSFORMERS_NO_TF"] = "1"
-from transformers import pipeline
+from transformers import pipeline         # <- now safe, after env vars
 from huggingface_hub import login as hf_login
-
-# Prophet
 from prophet import Prophet
 
-# TensorFlow for LSTM
+# Only AFTER transformers import, bring in TensorFlow/Keras:
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense, Dropout
