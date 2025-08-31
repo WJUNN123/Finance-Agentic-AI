@@ -1,0 +1,10 @@
+streamlit
+pandas
+matplotlib
+requests
+transformers
+torch
+huggingface-hub
+prophet
+scikit-learn
+tensorflow
