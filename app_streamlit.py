@@ -1220,7 +1220,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         with cR:
             st.line_chart(df, height=260)
     else:
-        st.caption("_No forecast available._")d
+        st.caption("_No forecast available._")
 
 # =================================================================
 # 8) Build response (tiny change: return `result`)
