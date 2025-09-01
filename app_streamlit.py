@@ -1214,13 +1214,13 @@ def render_pretty_summary(result, horizon_days: int = 7):
         v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
         rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
 
-    # 2) Series: last 6 months of history
-    hist_df = result.get("history", pd.DataFrame()) or pd.DataFrame()
+    # 2) Series: last 6 months of history (NO boolean ops on DataFrame)
+    hist_df = result.get("history")
     history_series = pd.Series(dtype=float)
-    if not hist_df.empty and "price" in hist_df.columns:
+    if isinstance(hist_df, pd.DataFrame) and (not hist_df.empty) and ("price" in hist_df.columns):
         last_ts = hist_df.index.max()
         cutoff = last_ts - pd.Timedelta(days=180)
-        hist6 = hist_df[hist_df.index >= cutoff]
+        hist6 = hist_df.loc[hist_df.index >= cutoff]
         history_series = hist6["price"].astype(float)
 
     # 3) Series: next N-day forecast (ensemble -> prophet -> lstm)
@@ -1230,22 +1230,18 @@ def render_pretty_summary(result, horizon_days: int = 7):
         v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
         if d is not None and v is not None:
             future_points[d] = float(v)
-    forecast_series = pd.Series(future_points, dtype=float) if future_points else pd.Series(dtype=float)
+    forecast_series = pd.Series(future_points, dtype=float) if len(future_points) > 0 else pd.Series(dtype=float)
 
-    # 4) Combine into one DataFrame for plotting
-    #    (Streamlit can plot tz-aware indexes; keep UTC index if present)
-    if not history_series.empty or not forecast_series.empty:
-        combined = pd.DataFrame(index=pd.Index([], dtype=history_series.index.dtype if not history_series.empty else "datetime64[ns, UTC]"))
-        if not history_series.empty:
-            combined = combined.join(history_series.rename("History"), how="outer")
-        if not forecast_series.empty:
-            combined = combined.join(forecast_series.rename("Forecast"), how="outer")
-        combined = combined.sort_index()
-    else:
-        combined = pd.DataFrame()
+    # 4) Combine into one DataFrame for plotting (no ambiguous truthiness)
+    combined = pd.DataFrame()
+    if not history_series.empty:
+        combined["History"] = history_series
+    if not forecast_series.empty:
+        combined["Forecast"] = forecast_series
+    combined = combined.sort_index()
 
     # 5) Layout: table (left) + combined chart (right)
-    if rows:
+    if len(rows) > 0:
         df_table = pd.DataFrame(rows).set_index("Date")
         cL, cR = st.columns([1, 1.6])
         with cL:
