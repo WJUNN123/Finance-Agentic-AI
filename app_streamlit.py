@@ -1029,11 +1029,24 @@ def _sentiment_bar(pos, neu, neg, width_blocks=20):
     rb = max(0, width_blocks - pb - nb)
     return "🟩"*pb + "⬜"*nb + "🟥"*rb
 
+def _rec_style(rating: str):
+    txt = (rating or "").lower()
+    if "buy" in txt:
+        return ("BUY", "🟢", "#16a34a")
+    if "sell" in txt or "avoid" in txt:
+        return ("SELL / AVOID", "🔴", "#ef4444")
+    return ("HOLD / WAIT", "🟡", "#f59e0b")
+    
 def render_pretty_summary(result, horizon_days: int = 7):
+    """
+    Pretty dashboard renderer for the Summary tab.
+    Requires UI helpers: _fmt_money, _rsi_zone, _sentiment_bar, _rec_style
+    """
     market = result["market"]
     pcts = result.get("sentiment_percentages", {}) or {}
     rec  = result.get("recommendation", {}) or {}
 
+    # --- Unpack market ---
     name  = f"{market.get('coin','').capitalize()} ({market.get('symbol','').upper()})"
     price = market.get("price_usd", float("nan"))
     c24   = market.get("pct_change_24h", float("nan"))
@@ -1042,11 +1055,18 @@ def render_pretty_summary(result, horizon_days: int = 7):
     mcap  = market.get("market_cap", float("nan"))
     vol24 = market.get("volume_24h", float("nan"))
 
+    # --- Derived ---
     liq_pct = (vol24 / mcap * 100.0) if (isinstance(mcap,(int,float)) and mcap>0 and isinstance(vol24,(int,float))) else None
     c24_arrow = "🔺" if (isinstance(c24,(int,float)) and c24 >= 0) else "🔻"
     c24_color = "#2ecc71" if (isinstance(c24,(int,float)) and c24 >= 0) else "#e74c3c"
-    rec_text  = rec.get("rating","HOLD / WAIT")
 
+    # Recommendation cosmetics
+    rec_text  = rec.get("rating","HOLD / WAIT")
+    rec_label, rec_emoji, rec_color = _rec_style(rec_text)
+
+    # =========================
+    # Header: Price + Metrics
+    # =========================
     st.markdown(f"### 📊 {name}")
     cols = st.columns([1.5, 1.2, 1.2, 1.2])
     with cols[0]:
@@ -1054,6 +1074,13 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.markdown(f"<span style='font-size:2rem;font-weight:800'>$ {price:,.2f}</span>", unsafe_allow_html=True)
         st.markdown(
             f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24 if isinstance(c24,(int,float)) else '—'}% · 24h</span>",
+            unsafe_allow_html=True
+        )
+        # Big recommendation badge
+        st.markdown(
+            f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;border-radius:12px;"
+            f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.0rem'>"
+            f"{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
     with cols[1]:
@@ -1076,6 +1103,44 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     st.divider()
 
+    # =========================
+    # NEW: Recommendation block
+    # =========================
+    st.subheader("✅ Recommendation")
+    rec_score = rec.get("score", None)
+    colsR = st.columns([1.2, 2.2])
+    with colsR[0]:
+        # Badge again + numeric score bar
+        st.markdown(
+            f"<span style='display:inline-block;padding:6px 12px;border-radius:12px;"
+            f"background:{rec_color}22;color:{rec_color};font-weight:800'>{rec_emoji} {rec_label}</span>",
+            unsafe_allow_html=True
+        )
+        if isinstance(rec_score, (int, float)):
+            # map score in [-1..+1] to [0..100] for a progress bar
+            score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))
+            st.progress(score100, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
+        else:
+            st.caption("Model score unavailable.")
+    with colsR[1]:
+        # Short “why” bullets pulled from your insight text
+        insight = rec.get("insight", "")
+        def pick(lbl):
+            for pat in [rf"^\*\*{re.escape(lbl)}\*\*\s*:?\s*(.+)$", rf"^{re.escape(lbl)}\s*:?\s*(.+)$"]:
+                for ln in [l.strip() for l in insight.splitlines() if l.strip()]:
+                    m = re.match(pat, ln, flags=re.I)
+                    if m: return m.group(0)
+            return "—"
+        st.write(f"• {pick('Sentiment')}")
+        st.write(f"• {pick('24-hour Momentum')}")
+        st.write(f"• {pick('7-day Momentum')}")
+        st.write(f"• {pick('RSI (14)')}")
+
+    st.divider()
+
+    # =========================
+    # Sentiment / Risks / Momentum
+    # =========================
     c1, c2, c3 = st.columns([1.1, 1.1, 1])
     with c1:
         st.subheader("📰 Sentiment")
@@ -1118,6 +1183,9 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     st.divider()
 
+    # =========================
+    # Strategy (What-if)
+    # =========================
     st.subheader("🧠 Strategy Simulation")
     pos = float(pcts.get("positive", 0.0)); neg = float(pcts.get("negative", 0.0))
     sim_score = (pos - neg)/100.0
@@ -1133,6 +1201,9 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     st.divider()
 
+    # =========================
+    # Forecast (table + chart)
+    # =========================
     st.subheader(f"🔮 {horizon_days}-Day Forecast")
     ft = result.get("forecast_table", []) or []
     rows = []
@@ -1149,7 +1220,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         with cR:
             st.line_chart(df, height=260)
     else:
-        st.caption("_No forecast available._")
+        st.caption("_No forecast available._")d
 
 # =================================================================
 # 8) Build response (tiny change: return `result`)
