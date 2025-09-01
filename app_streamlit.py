@@ -831,48 +831,42 @@ def analyze_coin(coin_id: str,
             "lstm": lstm_val,
             "ensemble": ensemble_val
         })
+
     last_prediction = None
     if forecast_table:
         last_row = forecast_table[-1]
         last_prediction = last_row.get("ensemble") if last_row.get("ensemble") is not None else (last_row.get("prophet") or last_row.get("lstm"))
 
-    # ---------- Monte-Carlo uncertainty band (IQR) ----------
-    mc_mean, mc_lo, mc_hi = [], [], []
-    try:
-        # Use recent log-return volatility (EWMA) and LSTM drift as baseline
-        if hist is not None and not hist.empty and "price" in hist.columns and lstm_preds:
-            hist_prices = hist["price"].astype(float)
-            p0 = float(hist_prices.iloc[-1])
+    # ---------- Alignment (do signals agree with forecast?) ----------
+    # 7-day forecast % change based on ensemble vs current price
+    fc_vals = [r.get("ensemble") or r.get("prophet") or r.get("lstm") for r in forecast_table if r]
+    forecast_pct_7d = None
+    if isinstance(price, (int, float)) and price > 0 and fc_vals and (fc_vals[-1] is not None):
+        try:
+            forecast_pct_7d = 100.0 * (float(fc_vals[-1]) - float(price)) / float(price)
+        except Exception:
+            forecast_pct_7d = None
 
-            # Daily log returns and EWMA vol
-            logrets = np.log(hist_prices).diff().dropna()
-            if not logrets.empty:
-                sig = float(logrets.ewm(span=20, adjust=False).std().iloc[-1])
-            else:
-                sig = 0.0
-            sig = 0.0 if (isinstance(sig, float) and (math.isnan(sig) or sig < 1e-9)) else sig
+    # Directional scores from sentiment & RSI
+    # (Clamp sentiment to [-1,1] in case your scorer emits a wider range.)
+    sent_dir = 0.0
+    if isinstance(agg_sent, (int, float)):
+        sent_dir = max(-1.0, min(1.0, float(agg_sent)))
+    rsi_dir = 0.0
+    if isinstance(rsi, (int, float)):
+        rsi_dir = -0.6 if rsi < 35 else (0.0 if rsi <= 65 else 0.6)
 
-            # Drift from LSTM path (convert to daily log-returns)
-            drift = np.diff(np.log([p0] + list(lstm_preds)))
-            horizon = len(lstm_preds)
-            if len(drift) < horizon and len(drift) > 0:
-                drift = np.pad(drift, (0, horizon - len(drift)), mode="edge")
+    align_score = None
+    if forecast_pct_7d is not None:
+        fdir = 1.0 if forecast_pct_7d > 0 else (-1.0 if forecast_pct_7d < 0 else 0.0)
+        align_raw = fdir * (0.7 * sent_dir + 0.3 * rsi_dir)  # in roughly [-1,1]
+        align_score = int(round(50 + 50 * align_raw))        # map to 0..100
 
-            # Simulate
-            rng = np.random.default_rng(42)
-            n_paths = 50
-            sims = []
-            for _ in range(n_paths):
-                noise = rng.normal(0.0, sig, size=horizon) * 0.6  # scale for realism
-                rets = drift + noise
-                path = p0 * np.exp(np.cumsum(rets))
-                sims.append(path)
-            sims = np.array(sims)  # (n_paths, horizon)
-            mc_mean = sims.mean(axis=0).tolist()
-            mc_lo   = np.percentile(sims, 25, axis=0).tolist()
-            mc_hi   = np.percentile(sims, 75, axis=0).tolist()
-    except Exception:
-        mc_mean, mc_lo, mc_hi = [], [], []
+    alignment = {
+        "forecast_pct_7d": forecast_pct_7d,
+        "agreement_score": align_score,
+        "explain": {"sent_dir": sent_dir, "rsi_dir": rsi_dir}
+    }
 
     # ---------- Memory & retrieval ----------
     try:
@@ -920,11 +914,9 @@ def analyze_coin(coin_id: str,
         "forecast_table": forecast_table,
         "last_prediction": last_prediction,
         "explainability": explain_trace,
-        # NEW: return MC band arrays for the UI
-        "mc_mean": mc_mean,
-        "mc_lo": mc_lo,
-        "mc_hi": mc_hi,
+        "alignment": alignment,  # <-- NEW
     }
+
 
 # =================================================================
 # 6) Intent parser & pretty text (your original functions)
@@ -1303,6 +1295,29 @@ def render_pretty_summary(result, horizon_days: int = 7):
     st.divider()
 
     # =========================
+    # Signal Consistency (alignment)
+    # =========================
+    alg = result.get("alignment") or {}
+    f7 = alg.get("forecast_pct_7d", None)
+    agree = alg.get("agreement_score", None)
+    st.subheader("🔗 Signal Consistency")
+    colA, colB = st.columns([1, 2])
+    with colA:
+        st.metric("Model 7-day Δ", "—" if (f7 is None) else f"{f7:+.2f}%")
+    with colB:
+        if agree is not None:
+            st.progress(agree, text=f"Agreement Score: {agree}/100")
+        # Friendly summary
+        if agree is None or agree >= 55:
+            st.success("Signals broadly agree with the forecast.")
+        elif 45 <= agree < 55:
+            st.info("Mixed signals: price model and indicators are neutral/offsetting.")
+        else:
+            st.warning("Contradiction: indicators disagree with the forecast. Consider scenario analysis.")
+
+    st.divider()
+
+    # =========================
     # Strategy (What-if)
     # =========================
     st.subheader("🧠 Strategy Simulation")
@@ -1375,7 +1390,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
                 plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
 
-                # Colors
+                # Color: blue for history, red for forecast
                 color_scale = alt.Scale(
                     domain=["History", "Forecast"],
                     range=["#4e79a7", "#ff4d4f"]
@@ -1392,33 +1407,13 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 lines = base.mark_line(size=2)
                 points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
 
-                # --- NEW: Monte-Carlo IQR band (25–75%) ---
-                mc_mean = result.get("mc_mean") or []
-                mc_lo   = result.get("mc_lo") or []
-                mc_hi   = result.get("mc_hi") or []
-                chart = (lines + points)
-                try:
-                    if mc_mean and len(mc_mean) == df_forecast.shape[0]:
-                        band_df = pd.DataFrame({
-                            "Date": pd.to_datetime(df_forecast.index),
-                            "lo": mc_lo,
-                            "hi": mc_hi,
-                        })
-                        band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
-                            x=alt.X("Date:T", title="Date"),
-                            y="lo:Q",
-                            y2="hi:Q",
-                        )
-                        chart = chart + band_chart
-                except Exception:
-                    pass
-
-                st.altair_chart(chart.interactive(), use_container_width=True)
+                st.altair_chart((lines + points).interactive(), use_container_width=True)
             else:
                 st.caption("_No forecast available._")
 
     else:
         st.caption("_No forecast available._")
+
 
 
 # =================================================================
