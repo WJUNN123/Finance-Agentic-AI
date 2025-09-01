@@ -1039,8 +1039,8 @@ def _rec_style(rating: str):
     
 def render_pretty_summary(result, horizon_days: int = 7):
     """
-    Pretty dashboard renderer for the Summary tab.
-    Requires UI helpers: _fmt_money, _rsi_zone, _sentiment_bar, _rec_style
+    Pretty dashboard renderer for the Summary view.
+    Requires helpers: _fmt_money, _rsi_zone, _sentiment_bar, _rec_style
     """
     market = result["market"]
     pcts = result.get("sentiment_percentages", {}) or {}
@@ -1104,26 +1104,23 @@ def render_pretty_summary(result, horizon_days: int = 7):
     st.divider()
 
     # =========================
-    # NEW: Recommendation block
+    # Recommendation block
     # =========================
     st.subheader("✅ Recommendation")
     rec_score = rec.get("score", None)
     colsR = st.columns([1.2, 2.2])
     with colsR[0]:
-        # Badge again + numeric score bar
         st.markdown(
             f"<span style='display:inline-block;padding:6px 12px;border-radius:12px;"
             f"background:{rec_color}22;color:{rec_color};font-weight:800'>{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
         if isinstance(rec_score, (int, float)):
-            # map score in [-1..+1] to [0..100] for a progress bar
-            score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))
+            score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))  # map [-1..+1] → [0..100]
             st.progress(score100, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
         else:
             st.caption("Model score unavailable.")
     with colsR[1]:
-        # Short “why” bullets pulled from your insight text
         insight = rec.get("insight", "")
         def pick(lbl):
             for pat in [rf"^\*\*{re.escape(lbl)}\*\*\s*:?\s*(.+)$", rf"^{re.escape(lbl)}\s*:?\s*(.+)$"]:
@@ -1188,11 +1185,13 @@ def render_pretty_summary(result, horizon_days: int = 7):
     # =========================
     st.subheader("🧠 Strategy Simulation")
     pos = float(pcts.get("positive", 0.0)); neg = float(pcts.get("negative", 0.0))
-    sim_score = (pos - neg)/100.0
-    scenarios = generate_scenarios(sim_score,
-                                   rsi if isinstance(rsi,(int,float)) else float("nan"),
-                                   c24 if isinstance(c24,(int,float)) else float("nan"),
-                                   c7 if isinstance(c7,(int,float)) else float("nan"))
+    sim_score = (pos - neg) / 100.0
+    scenarios = generate_scenarios(
+        sim_score,
+        rsi if isinstance(rsi,(int,float)) else float("nan"),
+        c24 if isinstance(c24,(int,float)) else float("nan"),
+        c7 if isinstance(c7,(int,float)) else float("nan"),
+    )
     if scenarios:
         for s in scenarios:
             st.write(f"👉 {s}")
@@ -1202,9 +1201,11 @@ def render_pretty_summary(result, horizon_days: int = 7):
     st.divider()
 
     # =========================
-    # Forecast (table + chart)
+    # Forecast (last 6M history + next N-day forecast)
     # =========================
     st.subheader(f"🔮 {horizon_days}-Day Forecast")
+
+    # 1) Table: next N days
     ft = result.get("forecast_table", []) or []
     rows = []
     for row in ft[:horizon_days]:
@@ -1212,15 +1213,53 @@ def render_pretty_summary(result, horizon_days: int = 7):
         dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
         v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
         rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
-    if rows:
-        df = pd.DataFrame(rows).set_index("Date")
-        cL, cR = st.columns([1, 1.3])
-        with cL:
-            st.dataframe(df.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
-        with cR:
-            st.line_chart(df, height=260)
+
+    # 2) Series: last 6 months of history
+    hist_df = result.get("history", pd.DataFrame()) or pd.DataFrame()
+    history_series = pd.Series(dtype=float)
+    if not hist_df.empty and "price" in hist_df.columns:
+        last_ts = hist_df.index.max()
+        cutoff = last_ts - pd.Timedelta(days=180)
+        hist6 = hist_df[hist_df.index >= cutoff]
+        history_series = hist6["price"].astype(float)
+
+    # 3) Series: next N-day forecast (ensemble -> prophet -> lstm)
+    future_points = {}
+    for row in ft[:horizon_days]:
+        d = row.get("date")
+        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
+        if d is not None and v is not None:
+            future_points[d] = float(v)
+    forecast_series = pd.Series(future_points, dtype=float) if future_points else pd.Series(dtype=float)
+
+    # 4) Combine into one DataFrame for plotting
+    #    (Streamlit can plot tz-aware indexes; keep UTC index if present)
+    if not history_series.empty or not forecast_series.empty:
+        combined = pd.DataFrame(index=pd.Index([], dtype=history_series.index.dtype if not history_series.empty else "datetime64[ns, UTC]"))
+        if not history_series.empty:
+            combined = combined.join(history_series.rename("History"), how="outer")
+        if not forecast_series.empty:
+            combined = combined.join(forecast_series.rename("Forecast"), how="outer")
+        combined = combined.sort_index()
     else:
-        st.caption("_No forecast available._")
+        combined = pd.DataFrame()
+
+    # 5) Layout: table (left) + combined chart (right)
+    if rows:
+        df_table = pd.DataFrame(rows).set_index("Date")
+        cL, cR = st.columns([1, 1.6])
+        with cL:
+            st.dataframe(df_table.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
+        with cR:
+            if not combined.empty:
+                st.line_chart(combined, height=300, use_container_width=True)
+            else:
+                st.caption("_No history/forecast to chart._")
+    else:
+        if not combined.empty:
+            st.line_chart(combined, height=300, use_container_width=True)
+        else:
+            st.caption("_No forecast available._")
 
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
