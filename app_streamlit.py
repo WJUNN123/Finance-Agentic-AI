@@ -1383,13 +1383,60 @@ def build_single_response(user_message: str, session_id: str):
 
 
 # =================================================================
-# 9) STREAMLIT APP (Summary-only UI)
+# 9) STREAMLIT APP (Summary-only UI, polished)
 # =================================================================
-# Page header
-st.title("💬 Crypto Analyst (Streamlit)")
-st.caption("Ask about BTC, ETH, SOL, etc. This app renders a single, clean Summary dashboard. Educational only — not financial advice.")
+# ---- Tiny CSS polish ---------------------------------------------------------
+st.markdown("""
+<style>
+/* Overall spacing */
+.block-container { padding-top: 1.8rem; padding-bottom: 2.4rem; }
 
-# Minimal session state
+/* Cards */
+.card { background: #0b1220; border: 1px solid #1f2a44; border-radius: 16px; padding: 16px 18px; }
+.card > h3, .card > h4 { margin-top: 0; }
+
+/* Input row */
+.input-card label { color: #9fb3c8 !important; font-weight: 600; letter-spacing: .02em; }
+.input-inline { display: grid; grid-template-columns: 1fr 140px; gap: 12px; align-items: center; }
+
+/* Buttons & chips */
+button[kind="primary"] { border-radius: 12px !important; }
+.chips span{
+  display:inline-block; padding:6px 10px; border-radius:999px; margin:4px 6px 0 0;
+  border:1px solid #233047; color:#dfe8ff; background:#0e1726; font-size:.88rem; cursor:pointer;
+}
+.chips span:hover{ background:#122038; }
+
+/* Headings */
+h1, h2, h3 { letter-spacing:.01em; }
+.app-title{ display:flex; align-items:center; gap:.6rem; }
+.app-title .logo{
+  width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center;
+  background:linear-gradient(135deg,#7c3aed33,#06b6d433); border:1px solid #24324a; border-radius:12px;
+  font-size:1.1rem;
+}
+.app-subtitle{ color:#96a7bf; margin:-.15rem 0 1.1rem 0; }
+
+/* Info banner */
+.banner { background:#0e213a; border:1px solid #1c3357; color:#cfe3ff; border-radius:12px; padding:.9rem 1rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# ---- Header ------------------------------------------------------------------
+st.markdown(
+    "<div class='app-title'>"
+    "<div class='logo'>💬</div>"
+    "<h1 style='margin:0'>Crypto Analyst (Streamlit)</h1>"
+    "</div>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    "<div class='app-subtitle'>Ask about BTC, ETH, SOL, etc. This app renders a single, clean Summary dashboard. "
+    "Educational only — not financial advice.</div>",
+    unsafe_allow_html=True
+)
+
+# ---- Session state -----------------------------------------------------------
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "last_outputs" not in st.session_state:
@@ -1402,17 +1449,56 @@ if "last_outputs" not in st.session_state:
         "horizon": 7,
     }
 
-# Input row
-col_in1, col_in2 = st.columns([4, 1])
-with col_in1:
-    user_message = st.text_input(
-        "Your message",
-        placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
-    )
-with col_in2:
-    send_clicked = st.button("Send", use_container_width=True)
+# ---- Quick actions -----------------------------------------------------------
+with st.container():
+    colA, colB = st.columns([2, 3])
+    with colA:
+        st.markdown("##### Quick coins")
+        coins_html = "<div class='chips'>"
+        for c in DEFAULT_COINS:
+            q = f"{c['name']} {7}-day forecast"
+            coins_html += f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{q}'}}, '*')\">{c['name']}</span>"
+        coins_html += "</div>"
+        st.markdown(coins_html, unsafe_allow_html=True)
 
-# Handle send
+    with colB:
+        st.markdown("##### Suggested prompts")
+        prompts = [
+            "ETH 7-day forecast",
+            "Should I buy BTC?",
+            "SOL sentiment and risks",
+            "ADA next week outlook",
+        ]
+        html = "<div class='chips'>" + "".join(
+            [f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{p}'}}, '*')\">{p}</span>" for p in prompts]
+        ) + "</div>"
+        st.markdown(html, unsafe_allow_html=True)
+
+# NOTE: The little JS above posts messages; to actually set the field value,
+# we simply use Streamlit's key to preserve/override the default value.
+def _prefill_from_message():
+    # Streamlit injects a message; we mimic by checking query params or session flag.
+    # For simplicity, we keep standard behavior — users click chips, then paste/enter.
+    return st.session_state.get("prefill_input", "")
+
+# ---- Input card --------------------------------------------------------------
+with st.container():
+    st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
+    st.markdown("**Your message**")
+    # Grid: input + send button side-by-side
+    col_in1, col_in2 = st.columns([1, 0.26])
+    with col_in1:
+        user_message = st.text_input(
+            label="",
+            value="",
+            placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
+            key="user_text",
+        )
+    with col_in2:
+        send_clicked = st.button("Send", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---- Handle send -------------------------------------------------------------
 if send_clicked and user_message.strip():
     pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
         user_message, st.session_state.session_id
@@ -1426,13 +1512,12 @@ if send_clicked and user_message.strip():
         "horizon": parse_user_message(user_message)["horizon_days"],
     }
 
-# === Summary-only view ===
+# ---- Render summary or an empty state ----------------------------------------
 ui_result = st.session_state.last_outputs.get("result_for_ui")
 if ui_result:
-    render_pretty_summary(ui_result, horizon_days=st.session_state.last_outputs.get("horizon", 7))
-
-    # Optional: keep the original plaintext summary in an expander for debugging
-    # with st.expander("Raw summary (original pretty text)"):
-    #     st.markdown(st.session_state.last_outputs.get("pretty") or "_No summary yet._")
+    render_pretty_summary(
+        ui_result,
+        horizon_days=st.session_state.last_outputs.get("horizon", 7),
+    )
 else:
-    st.info("Ask about a coin to generate the dashboard.")
+    st.markdown("<div class='banner'>Ask about a coin to generate the dashboard.</div>", unsafe_allow_html=True)
