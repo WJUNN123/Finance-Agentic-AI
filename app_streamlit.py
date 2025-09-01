@@ -130,16 +130,7 @@ def human_dt(ts: float) -> str:
 # ---------------------------
 # Market helpers
 # ---------------------------
-@st.cache_data(ttl=120, show_spinner=False)
 def coingecko_market(coin_ids: List[str]) -> pd.DataFrame:
-    """
-    Markets snapshot for a list of coin ids.
-    - Backoff + caching to avoid 429s
-    - Returns empty DataFrame on failure (callers handle gracefully)
-    """
-    if not coin_ids:
-        return pd.DataFrame()
-
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
@@ -150,46 +141,23 @@ def coingecko_market(coin_ids: List[str]) -> pd.DataFrame:
         "sparkline": "false",
         "price_change_percentage": "1h,24h,7d",
     }
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    return pd.DataFrame(r.json())
 
-    data = _get_json_with_backoff(url, params)
-    return pd.DataFrame(data) if data else pd.DataFrame()
-
-
-@st.cache_data(ttl=300, show_spinner=False)
 def coingecko_chart(coin_id: str, days: int = 180) -> pd.DataFrame:
-    """
-    Historical price series (UTC index) for up to `days`.
-    - Uses exponential backoff
-    - Falls back to smaller ranges on rate limits (429) or errors
-    - Returns empty DataFrame with 'price' column when everything fails
-    """
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-
-    # Try the requested window first, then smaller ones
-    for d in [days, 120, 90, 60, 30, 14, 7]:
-        params = {"vs_currency": "usd", "days": d}
-        data = _get_json_with_backoff(url, params)
-        if not data:
-            continue
-
-        prices = data.get("prices") or []
-        if not prices:
-            continue
-
-        df = pd.DataFrame(prices, columns=["ts_ms", "price"])
-        if df.empty:
-            continue
-
+    params = {"vs_currency": "usd", "days": days}
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    prices = data.get("prices", [])
+    df = pd.DataFrame(prices, columns=["ts_ms", "price"]) if prices else pd.DataFrame(columns=["ts_ms", "price"])
+    if not df.empty:
         df["ts"] = pd.to_datetime(df["ts_ms"], unit="ms", utc=True)
         df.set_index("ts", inplace=True)
         df.drop(columns=["ts_ms"], inplace=True)
-        # Ensure numeric dtype
-        df["price"] = pd.to_numeric(df["price"], errors="coerce")
-        df = df.dropna(subset=["price"])
-        return df
-
-    # All attempts failed → safe empty frame
-    return pd.DataFrame(columns=["price"])
+    return df
 
 def compute_rsi(prices: pd.Series, period: int = 14) -> float:
     if prices is None or len(prices) < period + 1:
@@ -206,7 +174,6 @@ def compute_rsi(prices: pd.Series, period: int = 14) -> float:
 # ---------------------------
 # RSS news fetcher
 # ---------------------------
-@st.cache_data(ttl=300, show_spinner=False)
 def fetch_rss_articles(keyword: str, limit_per_feed: int = 20) -> List[Dict]:
     keyword_l = keyword.lower()
     items = []
@@ -1334,8 +1301,7 @@ def build_single_response(user_message: str, session_id: str):
     # Log user input
     save_conversation(session_id, "user", user_message)
 
-     # Core analysis
-        # Core analysis
+    # Core analysis
     result = analyze_coin(
         coin_id, coin_symbol,
         risk="Medium",
@@ -1343,15 +1309,10 @@ def build_single_response(user_message: str, session_id: str):
         forecast_days=horizon_days,
         model_choice="ensemble",
     )
-
     if "error" in result:
         resp = f"Error: {result['error']}"
         save_conversation(session_id, "assistant", resp)
         return resp, {}, "", None, None
-
-    # ⚠️ Handle rate-limit / empty history case gracefully
-    if isinstance(result.get("history"), pd.DataFrame) and result["history"].empty:
-        st.info("⚠️ Market history is temporarily unavailable due to data-source rate limiting. Try again in a minute.")
 
     # Keep original pretty-text summary (optional, shown in an expander)
     pretty = make_pretty_output(result, horizon_days)
@@ -1483,41 +1444,18 @@ if "last_outputs" not in st.session_state:
         "horizon": 7,
     }
 
-# ---- Quick actions (functional chips) ----------------------------------------
-# Ensure defaults
-if "user_text" not in st.session_state:
-    st.session_state.user_text = ""
-if "trigger_send" not in st.session_state:
-    st.session_state.trigger_send = False
-
-def _chip_row(labels, prefix_key, value_from_label, columns=6, autosend=True):
-    cols = st.columns(columns)
-    for i, label in enumerate(labels):
-        with cols[i % columns]:
-            if st.button(label, key=f"{prefix_key}_{i}", use_container_width=True):
-                st.session_state.user_text = value_from_label(label)
-                if autosend:
-                    st.session_state.trigger_send = True
-                # Force immediate rerun so the handler below can fire
-                st.rerun()
-
-# Chip style (rounded pills)
-st.markdown("""
-<style>
-div.stButton > button {
-  background: #0e1726; border:1px solid #233047; color:#dfe8ff;
-  border-radius: 999px; padding: 6px 12px; font-size: .88rem;
-}
-div.stButton > button:hover { background:#122038; border-color:#294062; }
-</style>
-""", unsafe_allow_html=True)
-
+# ---- Quick actions -----------------------------------------------------------
 with st.container():
     colA, colB = st.columns([2, 3])
     with colA:
         st.markdown("##### Quick coins")
-        coins = [c["name"] for c in DEFAULT_COINS]
-        _chip_row(coins, "coinchip", lambda lbl: f"{lbl} 7-day forecast", columns=6, autosend=True)
+        coins_html = "<div class='chips'>"
+        for c in DEFAULT_COINS:
+            q = f"{c['name']} {7}-day forecast"
+            coins_html += f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{q}'}}, '*')\">{c['name']}</span>"
+        coins_html += "</div>"
+        st.markdown(coins_html, unsafe_allow_html=True)
+
     with colB:
         st.markdown("##### Suggested prompts")
         prompts = [
@@ -1526,74 +1464,45 @@ with st.container():
             "SOL sentiment and risks",
             "ADA next week outlook",
         ]
-        _chip_row(prompts, "promptchip", lambda s: s, columns=4, autosend=True)
-        
+        html = "<div class='chips'>" + "".join(
+            [f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{p}'}}, '*')\">{p}</span>" for p in prompts]
+        ) + "</div>"
+        st.markdown(html, unsafe_allow_html=True)
+
 # ---- Input card --------------------------------------------------------------
 with st.container():
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
-
-    # One input only. Accessible label (hidden), value bound to session_state.
     user_message = st.text_input(
-        label="Message",
-        key="user_text",
+        label="",
+        value="",
         placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
-        label_visibility="collapsed",
+        key="user_text",
     )
-
-    # Full-width Send button below
-    send_clicked = st.button("Send", use_container_width=True, key="send_btn")
-
+    # Send button moved BELOW input
+    send_clicked = st.button("Send", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- Handle send -------------------------------------------------------------
-# If a chip set the auto-send flag, consume it and pretend Send was clicked
-if st.session_state.get("trigger_send", False) and st.session_state.get("user_text", "").strip():
-    send_clicked = True
-    st.session_state.trigger_send = False
+if send_clicked and user_message.strip():
+    pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
+        user_message, st.session_state.session_id
+    )
+    st.session_state.last_outputs = {
+        "pretty": pretty_text,
+        "ex": full_ex or {},
+        "heads": headlines_text,
+        "chart": chart_path,
+        "result_for_ui": result_obj,
+        "horizon": parse_user_message(user_message)["horizon_days"],
+    }
 
-request_ran = False
-if send_clicked and st.session_state.get("user_text", "").strip():
-    msg = st.session_state["user_text"]
-    request_ran = True
-    with st.status("Analyzing…", expanded=False) as status:
-        try:
-            pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
-                msg, st.session_state.session_id
-            )
-            # If build_single_response hit an error, it returns result_obj=None and pretty_text="Error: …"
-            if result_obj is None:
-                status.update(label="Failed ❌", state="error")
-                st.error(pretty_text)  # <-- show the reason (e.g., No market data / 429)
-            else:
-                st.session_state.last_outputs = {
-                    "pretty": pretty_text,
-                    "ex": full_ex or {},
-                    "heads": headlines_text,
-                    "chart": chart_path,
-                    "result_for_ui": result_obj,
-                    "horizon": parse_user_message(msg)["horizon_days"],
-                }
-                status.update(label="Done ✅", state="complete")
-        except Exception as e:
-            status.update(label="Failed ❌", state="error")
-            st.exception(e)  # show full trace so you can fix quickly
-            
-# ---- Render summary (or helpful message) ------------------------------------
+# ---- Render summary or an empty state ----------------------------------------
 ui_result = st.session_state.last_outputs.get("result_for_ui")
-
 if ui_result:
-    st.divider()
     render_pretty_summary(
         ui_result,
         horizon_days=st.session_state.last_outputs.get("horizon", 7),
     )
 else:
-    # If we just tried to run and still have nothing, explain why
-    if request_ran:
-        st.warning(
-            "No dashboard to display. This can happen if the data source is rate-limited or returned no market data. "
-            "Please try again in ~1–2 minutes or choose another coin."
-        )
-    else:
-        st.markdown("<div class='banner'>Ask about a coin to generate the dashboard.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='banner'>Ask about a coin to generate the dashboard.</div>", unsafe_allow_html=True)
