@@ -874,6 +874,26 @@ def analyze_coin(coin_id: str,
     except Exception:
         mc_mean, mc_lo, mc_hi = [], [], []
 
+    # ---------- Add a brief context note when forecast vs RSI diverge ----------
+    forecast_note = ""
+    try:
+        if forecast_table and isinstance(price, (int, float)) and price > 0:
+            fc_vals = [r.get("ensemble") or r.get("prophet") or r.get("lstm") for r in forecast_table if r]
+            if fc_vals and (fc_vals[-1] is not None):
+                fc_7d = 100.0 * (float(fc_vals[-1]) - float(price)) / float(price)
+                if (fc_7d < 0) and isinstance(rsi, (int, float)) and rsi < 35:
+                    forecast_note = (
+                        "⚖️ Forecast expects mild drift lower, but RSI is near oversold—"
+                        "a short-term bounce is possible. HOLD / WAIT is prudent."
+                    )
+                elif (fc_7d > 0) and isinstance(rsi, (int, float)) and rsi > 70:
+                    forecast_note = (
+                        "⚖️ Forecast points upward, but RSI is near overbought—"
+                        "pullback risk is elevated. Consider caution on entries."
+                    )
+    except Exception:
+        pass
+
     # ---------- Memory & retrieval ----------
     try:
         mem_text = f"{coin_id} snapshot {datetime.utcnow().isoformat()}: price {price}, 24h {pct_24h}, sentiment {agg_sent:.3f}"
@@ -920,11 +940,14 @@ def analyze_coin(coin_id: str,
         "forecast_table": forecast_table,
         "last_prediction": last_prediction,
         "explainability": explain_trace,
-        # NEW: return MC band arrays for the UI
+        # Monte-Carlo band for UI
         "mc_mean": mc_mean,
         "mc_lo": mc_lo,
         "mc_hi": mc_hi,
+        # NEW: one-line context note for the UI
+        "forecast_note": forecast_note,
     }
+
 
 # =================================================================
 # 6) Intent parser & pretty text (your original functions)
@@ -1254,6 +1277,10 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.write(f"• {pick('24-hour Momentum')}")
         st.write(f"• {pick('7-day Momentum')}")
         st.write(f"• {pick('RSI (14)')}")
+        # --- NEW: one-line context note when forecast conflicts with RSI ---
+        fc_note = result.get("forecast_note", "")
+        if fc_note:
+            st.caption(fc_note)
 
     st.divider()
 
@@ -1392,7 +1419,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 lines = base.mark_line(size=2)
                 points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
 
-                # --- NEW: Monte-Carlo IQR band (25–75%) ---
+                # Monte-Carlo IQR band (25–75%) if provided
                 mc_mean = result.get("mc_mean") or []
                 mc_lo   = result.get("mc_lo") or []
                 mc_hi   = result.get("mc_hi") or []
