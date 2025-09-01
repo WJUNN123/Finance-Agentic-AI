@@ -172,7 +172,6 @@ def compute_rsi(prices: pd.Series, period: int = 14) -> float:
     return float(rsi.iloc[-1])
 
 def rsi_series(prices: pd.Series, period: int = 14) -> pd.Series:
-    """Vector RSI for model features."""
     if prices is None or len(prices) < period + 1:
         return pd.Series(index=prices.index, dtype=float)
     delta = prices.diff()
@@ -183,6 +182,16 @@ def rsi_series(prices: pd.Series, period: int = 14) -> pd.Series:
     rs = avg_gain / (avg_loss.replace(0, np.nan))
     rsi = 100 - (100 / (1 + rs))
     return rsi
+
+def ewma_vol(logrets: pd.Series, span: int = 20) -> float:
+    """Exponentially-weighted volatility (daily)."""
+    if logrets is None or len(logrets.dropna()) < 5:
+        return float("nan")
+    return float(logrets.ewm(span=span, adjust=False).std().iloc[-1])
+
+def compound_from_returns(p0: float, rets: np.ndarray) -> np.ndarray:
+    """Turn an array of log returns into a price path starting at p0."""
+    return p0 * np.exp(np.cumsum(rets))
 
 # ---------------------------
 # RSS news fetcher
@@ -285,12 +294,6 @@ def sentiment_percentages(analyses: List[Dict]) -> Dict[str, float]:
 # Prophet forecasting
 # ---------------------------
 def forecast_with_prophet(price_series: pd.Series, days: int = 7) -> Tuple[pd.DataFrame, dict]:
-    """
-    Tuned Prophet:
-    - multiplicative seasonality (crypto often scales with price)
-    - higher changepoint_prior_scale so it adapts faster
-    - wider changepoint_range to allow recent trend shifts
-    """
     if price_series is None or len(price_series) < 30:
         return pd.DataFrame(), {"error": "Not enough history for Prophet (need >= 30 points)."}
 
@@ -301,9 +304,9 @@ def forecast_with_prophet(price_series: pd.Series, days: int = 7) -> Tuple[pd.Da
         daily_seasonality=True,
         weekly_seasonality=True,
         seasonality_mode="multiplicative",
-        changepoint_prior_scale=0.25,  # <- more reactive (default 0.05)
-        changepoint_range=0.9,         # <- allow changepoints deep into recent history
-        growth="linear"
+        changepoint_prior_scale=0.25,
+        changepoint_range=0.9,
+        growth="linear",
     )
     try:
         m.fit(df)
@@ -311,11 +314,10 @@ def forecast_with_prophet(price_series: pd.Series, days: int = 7) -> Tuple[pd.Da
         forecast = m.predict(future)
         summary = {}
         if not forecast.empty:
-            future_rows = forecast.tail(days)
-            last_hat   = float(future_rows["yhat"].iloc[-1])
-            last_upper = float(future_rows["yhat_upper"].iloc[-1])
-            last_lower = float(future_rows["yhat_lower"].iloc[-1])
-            summary = {"pred_last": last_hat, "upper": last_upper, "lower": last_lower}
+            f = forecast.tail(days)
+            summary = {"pred_last": float(f["yhat"].iloc[-1]),
+                       "upper": float(f["yhat_upper"].iloc[-1]),
+                       "lower": float(f["yhat_lower"].iloc[-1])}
         return forecast, summary
     except Exception as e:
         return pd.DataFrame(), {"error": str(e)}
@@ -338,19 +340,21 @@ def train_and_forecast_lstm(price_series: pd.Series,
                             window: int = LSTM_WINDOW,
                             epochs: int = LSTM_EPOCHS):
     """
-    Tuned LSTM:
-    - Features: log-returns, 7/14-day MA distance, RSI(14)
-    - Short, responsive window
-    - Same interface/output
+    LSTM predicts next-day log-returns (drift), not absolute price.
+    Features: ret, 7/14-day MA distance, RSI(14).
+    We then compound predicted returns to generate the price path.
+    We also compute EWMA volatility to later build uncertainty bands.
     """
     if price_series is None or len(price_series) < window + 20:
         return []
 
-    # Build feature dataframe
     s = price_series.astype(float).copy()
+    logp = np.log(s)
+    ret = logp.diff()
+
     df = pd.DataFrame({
         "price": s,
-        "ret": np.log(s).diff(),                        # log-return
+        "ret": ret,
     })
     df["ma7"]  = s.rolling(7).mean()
     df["ma14"] = s.rolling(14).mean()
@@ -358,35 +362,29 @@ def train_and_forecast_lstm(price_series: pd.Series,
     df["ma14_dist"] = (s - df["ma14"]) / s
     df["rsi14"] = rsi_series(s, 14)
 
-    # Drop warm-up NaNs
     df = df.dropna().copy()
     if df.empty or len(df) < window + horizon:
         return []
 
-    # Feature matrix
+    # X: features, y: next-day log-return
     feats = df[["ret", "ma7_dist", "ma14_dist", "rsi14"]].values
-    y_price = df["price"].values
+    y_ret = df["ret"].shift(-1).dropna().values
+    feats = feats[:-1, :]  # align X with y
 
-    # Scale each feature independently
     scaler_X = MinMaxScaler()
     X_scaled = scaler_X.fit_transform(feats)
-
-    scaler_y = MinMaxScaler()
-    y_scaled = scaler_y.fit_transform(y_price.reshape(-1, 1)).flatten()
 
     # Build sliding windows
     X, y = [], []
     for i in range(window, len(X_scaled)):
-        X.append(X_scaled[i - window:i, :])   # window x features
-        y.append(y_scaled[i])
+        X.append(X_scaled[i - window:i, :])
+        y.append(y_ret[i])
     X, y = np.array(X), np.array(y)
-
-    # Train/val split
     split = int(len(X) * 0.9)
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
 
-    # Model (slightly larger; still light)
+    # Model
     model = Sequential()
     model.add(LSTM(64, input_shape=(window, X.shape[2]), return_sequences=True))
     model.add(Dropout(0.15))
@@ -394,53 +392,34 @@ def train_and_forecast_lstm(price_series: pd.Series,
     model.add(Dropout(0.10))
     model.add(Dense(1, activation="linear"))
     model.compile(optimizer="adam", loss="mse")
-
     es = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
-    model.fit(X_train, y_train, validation_data=(X_val, y_val),
-              epochs=epochs, batch_size=LSTM_BATCH, callbacks=[es], verbose=0)
+    model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=epochs, batch_size=LSTM_BATCH, callbacks=[es], verbose=0)
 
-    # Recursive forecast on scaled features
-    preds_scaled = []
-    last_feat_window = X_scaled[-window:, :].copy()
+    # Recursive forecast of log-returns
+    last_window = X_scaled[-window:, :].copy()
+    preds_rets = []
+    # Estimate recent volatility for realism
+    sigma = ewma_vol(df["ret"], span=20)
+    sigma = 0.0 if (isinstance(sigma, float) and math.isnan(sigma)) else float(sigma)
 
-    # We’ll roll forward using naive feature updates:
-    # - next ret is unknown -> set to 0 (drift)
-    # - ma distances recompute from last price
-    # - rsi carried forward slightly (kept last value)
-    last_price = y_price[-1]
-    last_rsi   = df["rsi14"].iloc[-1]
     for _ in range(horizon):
-        x_in = last_feat_window.reshape((1, window, X.shape[2]))
-        yhat_scaled = model.predict(x_in, verbose=0)[0][0]
-        preds_scaled.append(yhat_scaled)
+        x_in = last_window.reshape((1, window, X.shape[2]))
+        mu_hat = float(model.predict(x_in, verbose=0)[0][0])  # predicted next-day log-return (drift)
+        preds_rets.append(mu_hat)
 
-        # Inverse scale predicted price
-        next_price = scaler_y.inverse_transform([[yhat_scaled]])[0][0]
+        # Build next pseudo-feature row for the sliding window (keep it simple and stable)
+        next_ret = mu_hat
+        # Keep MA distances & RSI roughly stable (we’re just rolling the window)
+        last_feat = last_window[-1, :].copy()
+        feat_next = last_feat.copy()
+        feat_next[0] = next_ret  # replace "ret" channel
+        feat_next = feat_next.reshape(1, -1)
+        last_window = np.vstack([last_window[1:], feat_next])
 
-        # Build next feature row (approximate)
-        next_ret = 0.0
-        next_ma7  = ( (df["price"].tail(6).tolist() + [next_price]) )
-        next_ma14 = ( (df["price"].tail(13).tolist() + [next_price]) )
-        ma7_val  = np.mean(next_ma7)
-        ma14_val = np.mean(next_ma14)
-        ma7_dist  = (next_price - ma7_val) / next_price if next_price != 0 else 0.0
-        ma14_dist = (next_price - ma14_val) / next_price if next_price != 0 else 0.0
-
-        # Keep RSI near last value to avoid unstable recursion
-        rsi_next = last_rsi
-
-        feat_next = np.array([[next_ret, ma7_dist, ma14_dist, rsi_next]])
-        feat_next_scaled = scaler_X.transform(feat_next)
-
-        # Slide window
-        last_feat_window = np.vstack([last_feat_window[1:], feat_next_scaled])
-
-        # Update buffers
-        last_price = next_price
-        last_rsi   = rsi_next
-
-    preds = scaler_y.inverse_transform(np.array(preds_scaled).reshape(-1, 1)).flatten().tolist()
-    return preds
+    # Turn predicted returns into prices
+    p0 = float(s.iloc[-1])
+    path = compound_from_returns(p0, np.array(preds_rets))
+    return path.tolist()
 
 # ---------------------------
 # Chart
@@ -818,6 +797,7 @@ def analyze_coin(coin_id: str,
         except Exception:
             lstm_preds = []
 
+    # ---------- Build forecast table (0.3 Prophet + 0.7 LSTM) ----------
     forecast_table = []
     last_date = hist.index[-1] if (hist is not None and not hist.empty) else None
     for i in range(forecast_days):
@@ -856,7 +836,45 @@ def analyze_coin(coin_id: str,
         last_row = forecast_table[-1]
         last_prediction = last_row.get("ensemble") if last_row.get("ensemble") is not None else (last_row.get("prophet") or last_row.get("lstm"))
 
-    # Memory & retrieval
+    # ---------- Monte-Carlo uncertainty band (IQR) ----------
+    mc_mean, mc_lo, mc_hi = [], [], []
+    try:
+        # Use recent log-return volatility (EWMA) and LSTM drift as baseline
+        if hist is not None and not hist.empty and "price" in hist.columns and lstm_preds:
+            hist_prices = hist["price"].astype(float)
+            p0 = float(hist_prices.iloc[-1])
+
+            # Daily log returns and EWMA vol
+            logrets = np.log(hist_prices).diff().dropna()
+            if not logrets.empty:
+                sig = float(logrets.ewm(span=20, adjust=False).std().iloc[-1])
+            else:
+                sig = 0.0
+            sig = 0.0 if (isinstance(sig, float) and (math.isnan(sig) or sig < 1e-9)) else sig
+
+            # Drift from LSTM path (convert to daily log-returns)
+            drift = np.diff(np.log([p0] + list(lstm_preds)))
+            horizon = len(lstm_preds)
+            if len(drift) < horizon and len(drift) > 0:
+                drift = np.pad(drift, (0, horizon - len(drift)), mode="edge")
+
+            # Simulate
+            rng = np.random.default_rng(42)
+            n_paths = 50
+            sims = []
+            for _ in range(n_paths):
+                noise = rng.normal(0.0, sig, size=horizon) * 0.6  # scale for realism
+                rets = drift + noise
+                path = p0 * np.exp(np.cumsum(rets))
+                sims.append(path)
+            sims = np.array(sims)  # (n_paths, horizon)
+            mc_mean = sims.mean(axis=0).tolist()
+            mc_lo   = np.percentile(sims, 25, axis=0).tolist()
+            mc_hi   = np.percentile(sims, 75, axis=0).tolist()
+    except Exception:
+        mc_mean, mc_lo, mc_hi = [], [], []
+
+    # ---------- Memory & retrieval ----------
     try:
         mem_text = f"{coin_id} snapshot {datetime.utcnow().isoformat()}: price {price}, 24h {pct_24h}, sentiment {agg_sent:.3f}"
         add_long_term_item(mem_text, {"price": price, "pct24": pct_24h, "sent": agg_sent})
@@ -902,6 +920,10 @@ def analyze_coin(coin_id: str,
         "forecast_table": forecast_table,
         "last_prediction": last_prediction,
         "explainability": explain_trace,
+        # NEW: return MC band arrays for the UI
+        "mc_mean": mc_mean,
+        "mc_lo": mc_lo,
+        "mc_hi": mc_hi,
     }
 
 # =================================================================
@@ -1300,7 +1322,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     st.divider()
 
-     # =========================
+    # =========================
     # Forecast (last 6M history + next N-day forecast)
     # =========================
     st.subheader(f"🔮 {horizon_days}-Day Forecast")
@@ -1353,7 +1375,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
                 plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
 
-                # Color: blue for history, red for forecast
+                # Colors
                 color_scale = alt.Scale(
                     domain=["History", "Forecast"],
                     range=["#4e79a7", "#ff4d4f"]
@@ -1370,12 +1392,34 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 lines = base.mark_line(size=2)
                 points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
 
-                st.altair_chart((lines + points).interactive(), use_container_width=True)
+                # --- NEW: Monte-Carlo IQR band (25–75%) ---
+                mc_mean = result.get("mc_mean") or []
+                mc_lo   = result.get("mc_lo") or []
+                mc_hi   = result.get("mc_hi") or []
+                chart = (lines + points)
+                try:
+                    if mc_mean and len(mc_mean) == df_forecast.shape[0]:
+                        band_df = pd.DataFrame({
+                            "Date": pd.to_datetime(df_forecast.index),
+                            "lo": mc_lo,
+                            "hi": mc_hi,
+                        })
+                        band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
+                            x=alt.X("Date:T", title="Date"),
+                            y="lo:Q",
+                            y2="hi:Q",
+                        )
+                        chart = chart + band_chart
+                except Exception:
+                    pass
+
+                st.altair_chart(chart.interactive(), use_container_width=True)
             else:
                 st.caption("_No forecast available._")
 
     else:
         st.caption("_No forecast available._")
+
 
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
