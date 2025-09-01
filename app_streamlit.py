@@ -1484,28 +1484,31 @@ if "last_outputs" not in st.session_state:
     }
 
 # ---- Quick actions (functional chips) ----------------------------------------
-def chip_row(labels, prefix_key, value_from_label, columns=6, autosend=True):
+# Ensure defaults
+if "user_text" not in st.session_state:
+    st.session_state.user_text = ""
+if "trigger_send" not in st.session_state:
+    st.session_state.trigger_send = False
+
+def _chip_row(labels, prefix_key, value_from_label, columns=6, autosend=True):
     cols = st.columns(columns)
     for i, label in enumerate(labels):
-        col = cols[i % columns]
-        with col:
+        with cols[i % columns]:
             if st.button(label, key=f"{prefix_key}_{i}", use_container_width=True):
-                # Fill the text input value
-                st.session_state["user_text"] = value_from_label(label)
-                # Set a one-shot flag to auto-send right after input renders
+                st.session_state.user_text = value_from_label(label)
                 if autosend:
-                    st.session_state["trigger_send"] = True
+                    st.session_state.trigger_send = True
+                # Force immediate rerun so the handler below can fire
+                st.rerun()
 
-# Chip button styling (rounded pill look)
+# Chip style (rounded pills)
 st.markdown("""
 <style>
 div.stButton > button {
   background: #0e1726; border:1px solid #233047; color:#dfe8ff;
   border-radius: 999px; padding: 6px 12px; font-size: .88rem;
 }
-div.stButton > button:hover {
-  background: #122038; border-color:#294062;
-}
+div.stButton > button:hover { background:#122038; border-color:#294062; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1513,11 +1516,8 @@ with st.container():
     colA, colB = st.columns([2, 3])
     with colA:
         st.markdown("##### Quick coins")
-        coin_labels = [c["name"] for c in DEFAULT_COINS]
-        def coin_fill(lbl):  # e.g. "Bitcoin 7-day forecast"
-            return f"{lbl} 7-day forecast"
-        chip_row(coin_labels, "coinchip", coin_fill, columns=6, autosend=True)
-
+        coins = [c["name"] for c in DEFAULT_COINS]
+        _chip_row(coins, "coinchip", lambda lbl: f"{lbl} 7-day forecast", columns=6, autosend=True)
     with colB:
         st.markdown("##### Suggested prompts")
         prompts = [
@@ -1526,46 +1526,52 @@ with st.container():
             "SOL sentiment and risks",
             "ADA next week outlook",
         ]
-        chip_row(prompts, "promptchip", lambda s: s, columns=4, autosend=True)
+        _chip_row(prompts, "promptchip", lambda s: s, columns=4, autosend=True)
         
 # ---- Input card --------------------------------------------------------------
 with st.container():
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
 
-    # Bind to session so chips can pre-fill this
+    # One input only. Accessible label (hidden), value bound to session_state.
     user_message = st.text_input(
-        label="",
-        value=st.session_state.get("user_text", ""),
-        placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
+        label="Message",
         key="user_text",
+        placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
+        label_visibility="collapsed",
     )
 
-    # Full-width button under the input
-    send_clicked = st.button("Send", use_container_width=True)
+    # Full-width Send button below
+    send_clicked = st.button("Send", use_container_width=True, key="send_btn")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- Handle send -------------------------------------------------------------
-# If a chip was clicked with autosend, consume the flag and force send
-if st.session_state.pop("trigger_send", False) and st.session_state.get("user_text", "").strip():
+# If a chip set the auto-send flag, consume it and pretend Send was clicked
+if st.session_state.get("trigger_send", False) and st.session_state.get("user_text", "").strip():
     send_clicked = True
+    st.session_state.trigger_send = False
 
 if send_clicked and st.session_state.get("user_text", "").strip():
-    user_message = st.session_state["user_text"]
-
-    pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
-        user_message, st.session_state.session_id
-    )
-
-    st.session_state.last_outputs = {
-        "pretty": pretty_text,
-        "ex": full_ex or {},
-        "heads": headlines_text,
-        "chart": chart_path,
-        "result_for_ui": result_obj,
-        "horizon": parse_user_message(user_message)["horizon_days"],
-    }
+    msg = st.session_state["user_text"]
+    with st.status("Analyzing…", expanded=False) as status:
+        try:
+            pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
+                msg, st.session_state.session_id
+            )
+            st.session_state.last_outputs = {
+                "pretty": pretty_text,
+                "ex": full_ex or {},
+                "heads": headlines_text,
+                "chart": chart_path,
+                "result_for_ui": result_obj,
+                "horizon": parse_user_message(msg)["horizon_days"],
+            }
+            status.update(label="Done ✅", state="complete")
+        except Exception as e:
+            status.update(label="Failed ❌", state="error")
+            # Show the error so it's visible in the UI
+            st.exception(e)
 
 # ---- Render summary or an empty state ----------------------------------------
 ui_result = st.session_state.last_outputs.get("result_for_ui")
