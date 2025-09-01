@@ -1335,6 +1335,7 @@ def build_single_response(user_message: str, session_id: str):
     save_conversation(session_id, "user", user_message)
 
      # Core analysis
+        # Core analysis
     result = analyze_coin(
         coin_id, coin_symbol,
         risk="Medium",
@@ -1342,14 +1343,15 @@ def build_single_response(user_message: str, session_id: str):
         forecast_days=horizon_days,
         model_choice="ensemble",
     )
+
     if "error" in result:
         resp = f"Error: {result['error']}"
         save_conversation(session_id, "assistant", resp)
         return resp, {}, "", None, None
 
-    # ⚠️ Gentle notice if history is missing (likely CoinGecko 429 rate limit)
+    # ⚠️ Handle rate-limit / empty history case gracefully
     if isinstance(result.get("history"), pd.DataFrame) and result["history"].empty:
-    st.info("⚠️ Market history is temporarily unavailable due to data-source rate limiting. Try again in a minute.")
+        st.info("⚠️ Market history is temporarily unavailable due to data-source rate limiting. Try again in a minute.")
 
     # Keep original pretty-text summary (optional, shown in an expander)
     pretty = make_pretty_output(result, horizon_days)
