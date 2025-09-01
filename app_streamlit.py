@@ -130,7 +130,16 @@ def human_dt(ts: float) -> str:
 # ---------------------------
 # Market helpers
 # ---------------------------
+@st.cache_data(ttl=120, show_spinner=False)
 def coingecko_market(coin_ids: List[str]) -> pd.DataFrame:
+    """
+    Markets snapshot for a list of coin ids.
+    - Backoff + caching to avoid 429s
+    - Returns empty DataFrame on failure (callers handle gracefully)
+    """
+    if not coin_ids:
+        return pd.DataFrame()
+
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
@@ -141,23 +150,46 @@ def coingecko_market(coin_ids: List[str]) -> pd.DataFrame:
         "sparkline": "false",
         "price_change_percentage": "1h,24h,7d",
     }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    return pd.DataFrame(r.json())
 
+    data = _get_json_with_backoff(url, params)
+    return pd.DataFrame(data) if data else pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def coingecko_chart(coin_id: str, days: int = 180) -> pd.DataFrame:
+    """
+    Historical price series (UTC index) for up to `days`.
+    - Uses exponential backoff
+    - Falls back to smaller ranges on rate limits (429) or errors
+    - Returns empty DataFrame with 'price' column when everything fails
+    """
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-    params = {"vs_currency": "usd", "days": days}
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    prices = data.get("prices", [])
-    df = pd.DataFrame(prices, columns=["ts_ms", "price"]) if prices else pd.DataFrame(columns=["ts_ms", "price"])
-    if not df.empty:
+
+    # Try the requested window first, then smaller ones
+    for d in [days, 120, 90, 60, 30, 14, 7]:
+        params = {"vs_currency": "usd", "days": d}
+        data = _get_json_with_backoff(url, params)
+        if not data:
+            continue
+
+        prices = data.get("prices") or []
+        if not prices:
+            continue
+
+        df = pd.DataFrame(prices, columns=["ts_ms", "price"])
+        if df.empty:
+            continue
+
         df["ts"] = pd.to_datetime(df["ts_ms"], unit="ms", utc=True)
         df.set_index("ts", inplace=True)
         df.drop(columns=["ts_ms"], inplace=True)
-    return df
+        # Ensure numeric dtype
+        df["price"] = pd.to_numeric(df["price"], errors="coerce")
+        df = df.dropna(subset=["price"])
+        return df
+
+    # All attempts failed → safe empty frame
+    return pd.DataFrame(columns=["price"])
 
 def compute_rsi(prices: pd.Series, period: int = 14) -> float:
     if prices is None or len(prices) < period + 1:
@@ -174,6 +206,7 @@ def compute_rsi(prices: pd.Series, period: int = 14) -> float:
 # ---------------------------
 # RSS news fetcher
 # ---------------------------
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_rss_articles(keyword: str, limit_per_feed: int = 20) -> List[Dict]:
     keyword_l = keyword.lower()
     items = []
@@ -1301,7 +1334,7 @@ def build_single_response(user_message: str, session_id: str):
     # Log user input
     save_conversation(session_id, "user", user_message)
 
-    # Core analysis
+     # Core analysis
     result = analyze_coin(
         coin_id, coin_symbol,
         risk="Medium",
@@ -1313,6 +1346,13 @@ def build_single_response(user_message: str, session_id: str):
         resp = f"Error: {result['error']}"
         save_conversation(session_id, "assistant", resp)
         return resp, {}, "", None, None
+
+    # ⚠️ Gentle notice if history is missing (likely CoinGecko 429 rate limit)
+    if isinstance(result.get("history"), pd.DataFrame) and result["history"].empty:
+        st.info(
+            "⚠️ Market history is temporarily unavailable due to data source rate limiting. "
+            "You may see limited RSI or forecast data — please try again in a few minutes."
+        )
 
     # Keep original pretty-text summary (optional, shown in an expander)
     pretty = make_pretty_output(result, horizon_days)
