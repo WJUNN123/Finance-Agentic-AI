@@ -1444,17 +1444,40 @@ if "last_outputs" not in st.session_state:
         "horizon": 7,
     }
 
-# ---- Quick actions -----------------------------------------------------------
+# ---- Quick actions (functional chips) ----------------------------------------
+def _chip_row(labels, prefix_key, fill_text_fn, columns=6, autosend=True):
+    cols = st.columns(columns)
+    for i, label in enumerate(labels):
+        col = cols[i % columns]
+        with col:
+            if st.button(label, key=f"{prefix_key}_{i}", use_container_width=True):
+                # Fill the input
+                st.session_state.user_text = fill_text_fn(label)
+                # Optional: auto-send right away
+                st.session_state.autosend = autosend
+                st.rerun()
+
+# Tiny CSS to make st.button look like rounded chips
+st.markdown("""
+<style>
+div.stButton > button {
+  background: #0e1726; border:1px solid #233047; color:#dfe8ff;
+  border-radius: 999px; padding: 6px 12px; font-size: .88rem;
+}
+div.stButton > button:hover {
+  background: #122038; border-color:#294062;
+}
+</style>
+""", unsafe_allow_html=True)
+
 with st.container():
     colA, colB = st.columns([2, 3])
     with colA:
         st.markdown("##### Quick coins")
-        coins_html = "<div class='chips'>"
-        for c in DEFAULT_COINS:
-            q = f"{c['name']} {7}-day forecast"
-            coins_html += f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{q}'}}, '*')\">{c['name']}</span>"
-        coins_html += "</div>"
-        st.markdown(coins_html, unsafe_allow_html=True)
+        coin_labels = [c["name"] for c in DEFAULT_COINS]
+        def _coin_fill(label):  # e.g. "Bitcoin 7-day forecast"
+            return f"{label} 7-day forecast"
+        _chip_row(coin_labels, "coinchip", _coin_fill, columns=6, autosend=True)
 
     with colB:
         st.markdown("##### Suggested prompts")
@@ -1464,27 +1487,37 @@ with st.container():
             "SOL sentiment and risks",
             "ADA next week outlook",
         ]
-        html = "<div class='chips'>" + "".join(
-            [f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{p}'}}, '*')\">{p}</span>" for p in prompts]
-        ) + "</div>"
-        st.markdown(html, unsafe_allow_html=True)
+        def _prompt_fill(label):
+            return label
+        _chip_row(prompts, "promptchip", _prompt_fill, columns=4, autosend=True)
 
 # ---- Input card --------------------------------------------------------------
 with st.container():
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
+
+    # Use the value set by chips if present
+    default_text = st.session_state.get("user_text", "")
     user_message = st.text_input(
         label="",
-        value="",
+        value=default_text,
         placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
-        key="user_text",
+        key="user_text",  # keep bound to session state
     )
-    # Send button moved BELOW input
+
+    # Send button BELOW input (full width)
     send_clicked = st.button("Send", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- Handle send -------------------------------------------------------------
-if send_clicked and user_message.strip():
+# If a chip requested auto-send, simulate a click
+if st.session_state.get("autosend", False) and st.session_state.get("user_text", "").strip():
+    send_clicked = True
+    # reset the flag so it doesn't keep firing
+    st.session_state.autosend = False
+
+if send_clicked and st.session_state.get("user_text", "").strip():
+    user_message = st.session_state["user_text"]
     pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
         user_message, st.session_state.session_id
     )
