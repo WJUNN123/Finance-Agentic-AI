@@ -1552,33 +1552,48 @@ if st.session_state.get("trigger_send", False) and st.session_state.get("user_te
     send_clicked = True
     st.session_state.trigger_send = False
 
+request_ran = False
 if send_clicked and st.session_state.get("user_text", "").strip():
     msg = st.session_state["user_text"]
+    request_ran = True
     with st.status("Analyzing…", expanded=False) as status:
         try:
             pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
                 msg, st.session_state.session_id
             )
-            st.session_state.last_outputs = {
-                "pretty": pretty_text,
-                "ex": full_ex or {},
-                "heads": headlines_text,
-                "chart": chart_path,
-                "result_for_ui": result_obj,
-                "horizon": parse_user_message(msg)["horizon_days"],
-            }
-            status.update(label="Done ✅", state="complete")
+            # If build_single_response hit an error, it returns result_obj=None and pretty_text="Error: …"
+            if result_obj is None:
+                status.update(label="Failed ❌", state="error")
+                st.error(pretty_text)  # <-- show the reason (e.g., No market data / 429)
+            else:
+                st.session_state.last_outputs = {
+                    "pretty": pretty_text,
+                    "ex": full_ex or {},
+                    "heads": headlines_text,
+                    "chart": chart_path,
+                    "result_for_ui": result_obj,
+                    "horizon": parse_user_message(msg)["horizon_days"],
+                }
+                status.update(label="Done ✅", state="complete")
         except Exception as e:
             status.update(label="Failed ❌", state="error")
-            # Show the error so it's visible in the UI
-            st.exception(e)
-
-# ---- Render summary or an empty state ----------------------------------------
+            st.exception(e)  # show full trace so you can fix quickly
+            
+# ---- Render summary (or helpful message) ------------------------------------
 ui_result = st.session_state.last_outputs.get("result_for_ui")
+
 if ui_result:
+    st.divider()
     render_pretty_summary(
         ui_result,
         horizon_days=st.session_state.last_outputs.get("horizon", 7),
     )
 else:
-    st.markdown("<div class='banner'>Ask about a coin to generate the dashboard.</div>", unsafe_allow_html=True)
+    # If we just tried to run and still have nothing, explain why
+    if request_ran:
+        st.warning(
+            "No dashboard to display. This can happen if the data source is rate-limited or returned no market data. "
+            "Please try again in ~1–2 minutes or choose another coin."
+        )
+    else:
+        st.markdown("<div class='banner'>Ask about a coin to generate the dashboard.</div>", unsafe_allow_html=True)
