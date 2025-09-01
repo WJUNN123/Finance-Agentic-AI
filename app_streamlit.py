@@ -1383,9 +1383,8 @@ def build_single_response(user_message: str, session_id: str):
 
 
 # =================================================================
-# 9) STREAMLIT APP (Summary-only UI, polished)
+# 9) STREAMLIT APP (Summary-only UI, polished with Send below input)
 # =================================================================
-# ---- Tiny CSS polish ---------------------------------------------------------
 st.markdown("""
 <style>
 /* Overall spacing */
@@ -1394,10 +1393,6 @@ st.markdown("""
 /* Cards */
 .card { background: #0b1220; border: 1px solid #1f2a44; border-radius: 16px; padding: 16px 18px; }
 .card > h3, .card > h4 { margin-top: 0; }
-
-/* Input row */
-.input-card label { color: #9fb3c8 !important; font-weight: 600; letter-spacing: .02em; }
-.input-inline { display: grid; grid-template-columns: 1fr 140px; gap: 12px; align-items: center; }
 
 /* Buttons & chips */
 button[kind="primary"] { border-radius: 12px !important; }
@@ -1426,7 +1421,7 @@ h1, h2, h3 { letter-spacing:.01em; }
 st.markdown(
     "<div class='app-title'>"
     "<div class='logo'>💬</div>"
-    "<h1 style='margin:0'>Crypto Analyst (Streamlit)</h1>"
+    "<h1 style='margin:0'>Crypto Agent</h1>"
     "</div>",
     unsafe_allow_html=True
 )
@@ -1474,28 +1469,18 @@ with st.container():
         ) + "</div>"
         st.markdown(html, unsafe_allow_html=True)
 
-# NOTE: The little JS above posts messages; to actually set the field value,
-# we simply use Streamlit's key to preserve/override the default value.
-def _prefill_from_message():
-    # Streamlit injects a message; we mimic by checking query params or session flag.
-    # For simplicity, we keep standard behavior — users click chips, then paste/enter.
-    return st.session_state.get("prefill_input", "")
-
 # ---- Input card --------------------------------------------------------------
 with st.container():
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
-    # Grid: input + send button side-by-side
-    col_in1, col_in2 = st.columns([1, 0.26])
-    with col_in1:
-        user_message = st.text_input(
-            label="",
-            value="",
-            placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
-            key="user_text",
-        )
-    with col_in2:
-        send_clicked = st.button("Send", use_container_width=True)
+    user_message = st.text_input(
+        label="",
+        value="",
+        placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
+        key="user_text",
+    )
+    # Send button moved BELOW input
+    send_clicked = st.button("Send", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- Handle send -------------------------------------------------------------
