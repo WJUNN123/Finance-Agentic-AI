@@ -1223,30 +1223,51 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.caption("_No forecast available._")
 
 # =================================================================
-# 8) Build response (tiny change: return `result`)
+# 8) Build response (returns structured `result` for the UI)
 # =================================================================
 def build_single_response(user_message: str, session_id: str):
+    """
+    Single-shot pipeline:
+      1) parse intent (coin + horizon)
+      2) analyze (market, sentiment, forecast)
+      3) persist conversation + outputs
+      4) return:
+         - pretty: legacy pretty-text (kept for expander/debug)
+         - ex:     explainability dict
+         - heads:  headlines string
+         - chart:  path to chart image (if generated)
+         - result: full structured object for the Summary dashboard
+    """
     parsed = parse_user_message(user_message)
     coin_id = parsed["coin_id"]
-    h = parsed["horizon_days"]
-    coin_symbol = next((c["symbol"] for c in DEFAULT_COINS if c["id"]==coin_id), coin_id[:4])
+    horizon_days = parsed["horizon_days"]
+    coin_symbol = next((c["symbol"] for c in DEFAULT_COINS if c["id"] == coin_id), coin_id[:4])
 
+    # Log user input
     save_conversation(session_id, "user", user_message)
 
-    result = analyze_coin(coin_id, coin_symbol, risk="Medium", horizon_days=h, forecast_days=h, model_choice="ensemble")
+    # Core analysis
+    result = analyze_coin(
+        coin_id, coin_symbol,
+        risk="Medium",
+        horizon_days=horizon_days,
+        forecast_days=horizon_days,
+        model_choice="ensemble",
+    )
     if "error" in result:
         resp = f"Error: {result['error']}"
         save_conversation(session_id, "assistant", resp)
         return resp, {}, "", None, None
 
-    pretty = make_pretty_output(result, h)
+    # Keep original pretty-text summary (optional, shown in an expander)
+    pretty = make_pretty_output(result, horizon_days)
 
-    ex = result.get("explainability", {})
-    comps = ex.get("components", {})
-
+    # Friendly explainability summary (optional)
+    ex = result.get("explainability", {}) or {}
+    comps = ex.get("components", {}) or {}
     friendly_ex = []
-    total_score = comps.get("total_score", None)
-    if total_score is not None:
+    total_score = comps.get("total_score")
+    if isinstance(total_score, (int, float)):
         exam_score = int(round(50 + 50 * total_score))
         exam_score = max(0, min(100, exam_score))
         if exam_score >= 80:
@@ -1261,62 +1282,86 @@ def build_single_response(user_message: str, session_id: str):
             mood_text = "very bearish 📉"
         friendly_ex.append(f"Score: {exam_score} → {mood_text}")
 
-    def describe_component(label, value, meaning):
+    def _describe_component(label, value, pos_hint, neg_hint):
         if value > 0.02:
             trend = "slightly bullish"
+            hint  = pos_hint
         elif value < -0.02:
             trend = "slightly bearish"
+            hint  = neg_hint
         else:
             trend = "neutral"
-        return f"{label}: {value:+.4f} → {trend} ({meaning})"
+            hint  = "balanced/flat"
+        return f"{label}: {value:+.4f} → {trend} ({hint})"
 
     if "rsi_component" in comps:
-        friendly_ex.append(describe_component("RSI", comps["rsi_component"], "price momentum is improving" if comps["rsi_component"] > 0 else "potential overbought/oversold"))
+        friendly_ex.append(_describe_component("RSI", comps["rsi_component"], "momentum improving", "risk of overbought/oversold"))
     if "sentiment_component" in comps:
-        friendly_ex.append(describe_component("Sentiment", comps["sentiment_component"], "news sentiment is mildly positive" if comps["sentiment_component"] > 0 else "news sentiment is mildly negative"))
+        friendly_ex.append(_describe_component("Sentiment", comps["sentiment_component"], "news mildly positive", "news mildly negative"))
     if "mom24_component" in comps:
-        friendly_ex.append(describe_component("Mom24", comps["mom24_component"], "24-hour momentum positive" if comps["mom24_component"] > 0 else "24-hour momentum weak"))
+        friendly_ex.append(_describe_component("Mom24", comps["mom24_component"], "24h momentum positive", "24h momentum weak"))
     if "mom7_component" in comps:
-        friendly_ex.append(describe_component("Mom7", comps["mom7_component"], "7-day momentum uptrend" if comps["mom7_component"] > 0 else "7-day momentum almost flat"))
+        friendly_ex.append(_describe_component("Mom7", comps["mom7_component"], "7d momentum uptrend", "7d momentum flat/weak"))
 
     friendly_ex_text = "\n".join(friendly_ex)
 
-    headlines_text = ""
+    # Headlines text (optional)
     if not result.get("sentiment_table", pd.DataFrame()).empty:
         dfh = result["sentiment_table"]
         headlines_text = "\n".join([f"{r['text']} → {r['label']} ({r['score']:.2f})" for _, r in dfh.head(6).iterrows()])
     else:
-        headlines_text = "\n".join([a.get("title","") for a in result.get("articles",[])[:6]])
+        headlines_text = "\n".join([a.get("title", "") for a in result.get("articles", [])[:6]])
 
-    chart_path = plot_history_forecasts_to_file(result.get("history", pd.DataFrame()), result.get("prophet_df", pd.DataFrame()), result.get("lstm_preds", []), coin_id)
+    # Chart file for the Chart tab (we keep generation; UI no longer shows it directly)
+    chart_path = plot_history_forecasts_to_file(
+        result.get("history", pd.DataFrame()),
+        result.get("prophet_df", pd.DataFrame()),
+        result.get("lstm_preds", []),
+        coin_id,
+    )
 
+    # Persist assistant outputs
     save_conversation(session_id, "assistant", pretty, {"chart": chart_path, "explain_summary": friendly_ex_text})
     save_conversation(session_id, "assistant", json.dumps(ex), {"explain_full": True})
 
     return pretty, ex, headlines_text, chart_path, result
 
-# =================================================================
-# 9) STREAMLIT APP (updated UI wiring)
-# =================================================================
-st.title("💬 Crypto Analyst (Streamlit)")
-st.caption("Ask about BTC, ETH, SOL, etc. Single-send → summary, explainability, headlines, chart. Educational only — not financial advice.")
 
+# =================================================================
+# 9) STREAMLIT APP (Summary-only UI)
+# =================================================================
+# Page header
+st.title("💬 Crypto Analyst (Streamlit)")
+st.caption("Ask about BTC, ETH, SOL, etc. This app renders a single, clean Summary dashboard. Educational only — not financial advice.")
+
+# Minimal session state
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
-if "chat" not in st.session_state:
-    st.session_state.chat = []
 if "last_outputs" not in st.session_state:
-    st.session_state.last_outputs = {"pretty": "", "ex": {}, "heads": "", "chart": None, "result_for_ui": None, "horizon": 7}
+    st.session_state.last_outputs = {
+        "pretty": "",
+        "ex": {},
+        "heads": "",
+        "chart": None,
+        "result_for_ui": None,
+        "horizon": 7,
+    }
 
-col_in1, col_in2 = st.columns([4,1])
+# Input row
+col_in1, col_in2 = st.columns([4, 1])
 with col_in1:
-    user_message = st.text_input("Your message", placeholder="Type your question (e.g. 'ETH 7-day forecast' or 'Should I buy BTC?')")
+    user_message = st.text_input(
+        "Your message",
+        placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
+    )
 with col_in2:
     send_clicked = st.button("Send", use_container_width=True)
 
+# Handle send
 if send_clicked and user_message.strip():
-    pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(user_message, st.session_state.session_id)
-    st.session_state.chat.append((user_message, pretty_text))
+    pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
+        user_message, st.session_state.session_id
+    )
     st.session_state.last_outputs = {
         "pretty": pretty_text,
         "ex": full_ex or {},
@@ -1326,44 +1371,13 @@ if send_clicked and user_message.strip():
         "horizon": parse_user_message(user_message)["horizon_days"],
     }
 
-# Chat transcript (simple)
-for u, a in st.session_state.chat:
-    with st.container(border=True):
-        st.markdown(f"**You:** {u}")
-        st.markdown(a)
+# === Summary-only view ===
+ui_result = st.session_state.last_outputs.get("result_for_ui")
+if ui_result:
+    render_pretty_summary(ui_result, horizon_days=st.session_state.last_outputs.get("horizon", 7))
 
-# Tabs like in your previous app
-summary_tab, explain_tab, headlines_tab, chart_tab = st.tabs(["📊 Summary", "🔎 Explainability", "📰 Headlines", "📈 Forecast Chart"])
-
-with summary_tab:
-    ui_result = st.session_state.last_outputs.get("result_for_ui")
-    if ui_result:
-        render_pretty_summary(ui_result, horizon_days=st.session_state.last_outputs.get("horizon", 7))
-        with st.expander("Raw summary (original pretty text)"):
-            st.markdown(st.session_state.last_outputs.get("pretty") or "_No summary yet._")
-    else:
-        st.info("Ask about a coin to generate the dashboard.")
-
-with explain_tab:
-    comps = (st.session_state.last_outputs.get("ex") or {}).get("components", {})
-    friendly = []
-    total = comps.get("total_score", None)
-    if total is not None:
-        mood = "slightly bullish 📈" if total > 0.05 else ("slightly bearish 📉" if total < -0.05 else "neutral 😐")
-        friendly.append(f"Model score: {total:.3f} → {mood}")
-    for k in ["rsi_component", "sentiment_component", "mom24_component", "mom7_component"]:
-        if k in comps:
-            friendly.append(f"{k.replace('_',' ').capitalize()}: {comps[k]:+.4f}")
-    st.text("\n".join(friendly) or "No explainability yet.")
-    st.divider()
-    st.subheader("Full Technical Trace")
-    st.json(st.session_state.last_outputs.get("ex") or {})
-
-with headlines_tab:
-    st.text_area("Top Headlines (with sentiment)", value=st.session_state.last_outputs.get("heads",""), height=260)
-
-with chart_tab:
-    if st.session_state.last_outputs.get("chart"):
-        st.image(st.session_state.last_outputs["chart"], caption="Price & Forecast Chart")
-    else:
-        st.info("Run a query to see the chart.")
+    # Optional: keep the original plaintext summary in an expander for debugging
+    # with st.expander("Raw summary (original pretty text)"):
+    #     st.markdown(st.session_state.last_outputs.get("pretty") or "_No summary yet._")
+else:
+    st.info("Ask about a coin to generate the dashboard.")
