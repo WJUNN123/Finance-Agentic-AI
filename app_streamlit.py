@@ -461,9 +461,9 @@ def recommend_and_insight(sentiment: float, pct_24h: float, pct_7d: float, rsi: 
     insight_text = "\n\n".join(pieces)
     return {"rating": rating, "score": float(score), "insight": insight_text}
 
-# ---------------------------
-# Short-term memory (SQLite)
-# ---------------------------
+# =================================================================
+# 1) MEMORY DB (exactly your code, unchanged)
+# =================================================================
 def init_memory_db(path=MEM_DB):
     con = sqlite3.connect(path, check_same_thread=False)
     cur = con.cursor()
@@ -503,9 +503,9 @@ def load_recent_session(session_id: str, limit: int = 20):
     except Exception:
         return []
 
-# ---------------------------
-# Long-term memory: embeddings + FAISS (if available)
-# ---------------------------
+# =================================================================
+# 2) Long-term memory (FAISS) — your code with safe guards
+# =================================================================
 EMB_MODEL = None
 FAISS_INDEX = None
 FAISS_META = []
@@ -522,7 +522,7 @@ def init_faiss(dim=None):
             index = faiss.read_index(FAISS_INDEX_PATH)
             metas = json.load(open(METADATA_STORE))
             FAISS_INDEX = index
-            FAISS_META.extend(metas)
+            FAISS_META[:] = metas
             return index, FAISS_META
     except Exception:
         pass
@@ -566,9 +566,9 @@ def retrieve_similar(query: str, k: int=5):
             results.append(FAISS_META[idx])
     return results
 
-# ---------------------------
-# Continual retraining helpers (skeleton)
-# ---------------------------
+# =================================================================
+# 3) Training helpers (your code)
+# =================================================================
 def collect_training_data(coin_id, lookback_days=180, horizon=7):
     df = coingecko_chart(coin_id, days=lookback_days+horizon)
     if df.empty: return None, None
@@ -591,12 +591,13 @@ def retrain_lstm_for_coin(coin_id, epochs=5):
     ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     path = os.path.join(MODEL_DIR, f"lstm_{coin_id}_{ts}.h5")
     model.save(path)
-    joblib.dump({"coin": coin_id, "saved_at": ts, "shape": X.shape}, path + ".meta.pkl")
+    if joblib:
+        joblib.dump({"coin": coin_id, "saved_at": ts, "shape": X.shape}, path + ".meta.pkl")
     return True, path
 
-# ---------------------------
-# Planner stubs
-# ---------------------------
+# =================================================================
+# 4) Planner + Explainability (your code)
+# =================================================================
 def rule_based_plan(market, sentiment_score_val, rsi, risk="medium", horizon_days=7):
     steps = []
     steps.append("Step 0: Monitor price and headlines every 1 hour for the next 24h.")
@@ -613,12 +614,15 @@ def rule_based_plan(market, sentiment_score_val, rsi, risk="medium", horizon_day
 def llm_plan_stub(context_text: str):
     return ["LLM Step 1: Evaluate immediate headlines and order book.", "LLM Step 2: Provide actionable thresholds (user define)."]
 
-# ---------------------------
-# Explainability helpers
-# ---------------------------
+def scale_ex(x, lo, hi):
+    try:
+        return max(-1.0, min(1.0, (float(x) - lo) / (hi - lo) * 2 - 1))
+    except Exception:
+        return 0.0
+
 def explain_trace_components(agg_sent, pct_24h, pct_7d, rsi):
-    mom24 = scale(pct_24h, -15, 15)
-    mom7 = scale(pct_7d, -40, 40)
+    mom24 = scale_ex(pct_24h, -15, 15)
+    mom7  = scale_ex(pct_7d, -40, 40)
 
     rsi_dev = 0.0
     if not (isinstance(rsi, float) and math.isnan(rsi)):
@@ -661,9 +665,9 @@ def generate_scenarios(sentiment: float, rsi: float, pct_24h: float, pct_7d: flo
 
     return scenarios
 
-# ---------------------------
-# Full analyze_coin (enhanced)
-# ---------------------------
+# =================================================================
+# 5) Full analyze_coin — your logic, unchanged except minor safety
+# =================================================================
 def analyze_coin(coin_id: str,
                  coin_symbol: str,
                  risk: str,
@@ -800,9 +804,9 @@ def analyze_coin(coin_id: str,
         "explainability": explain_trace,
     }
 
-# ---------------------------
-# Intent parser & pretty output
-# ---------------------------
+# =================================================================
+# 6) Intent parser & pretty text (your original functions)
+# =================================================================
 def parse_user_message(message: str) -> Dict:
     msg = message.lower()
     coin_id = None
@@ -832,7 +836,6 @@ def parse_user_message(message: str) -> Dict:
         if "month" in msg: horizon_days = 30
     return {"coin_id": coin_id, "intent": intent, "horizon_days": horizon_days}
 
-
 def _pick_insight_line(insight_text: str, label: str, fallback: str = "—") -> str:
     if not insight_text:
         return fallback
@@ -848,8 +851,8 @@ def _pick_insight_line(insight_text: str, label: str, fallback: str = "—") -> 
                 return ln
     return fallback
 
-
 def make_pretty_output(result: Dict, horizon_days: int) -> str:
+    # (your original condensed text builder; unchanged)
     market = result["market"]
     pcts = result.get("sentiment_percentages", {})
     rec = result["recommendation"]
@@ -890,7 +893,6 @@ def make_pretty_output(result: Dict, horizon_days: int) -> str:
     scenario_text = "\n".join([f"👉 {s}" for s in scenarios]) if scenarios else "No active strategic signals."
 
     risk_lines = ["⚠️ Risk Disclosure"]
-
     try:
         if (isinstance(vol, (int, float)) and isinstance(mc, (int, float))
             and not math.isnan(vol) and not math.isnan(mc) and mc > 0):
@@ -898,7 +900,6 @@ def make_pretty_output(result: Dict, horizon_days: int) -> str:
             risk_lines.append(f"Liquidity Risk: 24h volume is {liq_pct:.2f}% of market cap (thin order book risk).")
     except Exception:
         pass
-
     try:
         arts = result.get("articles", [])
         titles_blob = " ".join([a.get("title", "") for a in arts])[:3000]
@@ -906,7 +907,6 @@ def make_pretty_output(result: Dict, horizon_days: int) -> str:
             risk_lines.append("Regulatory Risk: Recent headlines reference regulatory actions or reviews.")
     except Exception:
         pass
-
     total_score = comps.get("total_score", None)
     if total_score is not None:
         exam_score = int(round(50 + 50 * float(total_score)))
@@ -1008,9 +1008,152 @@ def make_pretty_output(result: Dict, horizon_days: int) -> str:
     ])
     return output
 
-# ---------------------------
-# Build response for chat (single pipeline)
-# ---------------------------
+# =================================================================
+# 7) UI HELPERS (new)
+# =================================================================
+def _fmt_money(n):
+    if n is None or (isinstance(n, float) and math.isnan(n)): return "—"
+    a = abs(n)
+    if a >= 1_000_000_000_000: return f"${n/1_000_000_000_000:.2f}T"
+    if a >= 1_000_000_000:     return f"${n/1_000_000_000:.2f}B"
+    if a >= 1_000_000:         return f"${n/1_000_000:.2f}M"
+    return f"${n:,.2f}"
+
+def _rsi_zone(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)): return "—"
+    return "Overbought" if v >= 70 else ("Oversold" if v <= 30 else "Neutral")
+
+def _sentiment_bar(pos, neu, neg, width_blocks=20):
+    pb = int(round(width_blocks * (pos/100.0)))
+    nb = int(round(width_blocks * (neu/100.0)))
+    rb = max(0, width_blocks - pb - nb)
+    return "🟩"*pb + "⬜"*nb + "🟥"*rb
+
+def render_pretty_summary(result, horizon_days: int = 7):
+    market = result["market"]
+    pcts = result.get("sentiment_percentages", {}) or {}
+    rec  = result.get("recommendation", {}) or {}
+
+    name  = f"{market.get('coin','').capitalize()} ({market.get('symbol','').upper()})"
+    price = market.get("price_usd", float("nan"))
+    c24   = market.get("pct_change_24h", float("nan"))
+    c7    = market.get("pct_change_7d", float("nan"))
+    rsi   = market.get("rsi_14", float("nan"))
+    mcap  = market.get("market_cap", float("nan"))
+    vol24 = market.get("volume_24h", float("nan"))
+
+    liq_pct = (vol24 / mcap * 100.0) if (isinstance(mcap,(int,float)) and mcap>0 and isinstance(vol24,(int,float))) else None
+    c24_arrow = "🔺" if (isinstance(c24,(int,float)) and c24 >= 0) else "🔻"
+    c24_color = "#2ecc71" if (isinstance(c24,(int,float)) and c24 >= 0) else "#e74c3c"
+    rec_text  = rec.get("rating","HOLD / WAIT")
+
+    st.markdown(f"### 📊 {name}")
+    cols = st.columns([1.5, 1.2, 1.2, 1.2])
+    with cols[0]:
+        st.markdown("**Price**")
+        st.markdown(f"<span style='font-size:2rem;font-weight:800'>$ {price:,.2f}</span>", unsafe_allow_html=True)
+        st.markdown(
+            f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24 if isinstance(c24,(int,float)) else '—'}% · 24h</span>",
+            unsafe_allow_html=True
+        )
+    with cols[1]:
+        st.metric("Market Cap", _fmt_money(mcap))
+        st.metric("24h Volume", _fmt_money(vol24))
+    with cols[2]:
+        st.metric("7d Change", f"{c7 if isinstance(c7,(int,float)) else '—'}%")
+        st.metric("RSI (14)", f"{rsi:.1f}" if isinstance(rsi,(int,float)) else "—")
+    with cols[3]:
+        st.write("**Quick tags**")
+        chips = []
+        if isinstance(c7,(int,float)): chips.append(f"7d: {c7:.2f}%")
+        if isinstance(liq_pct,(int,float)): chips.append(f"Liquidity: {liq_pct:.1f}%")
+        chips.append(f"RSI: {f'{rsi:.1f}' if isinstance(rsi,(int,float)) else '—'} · {_rsi_zone(rsi)}")
+        chips.append(rec_text)
+        st.markdown(
+            " ".join([f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:6px 10px;border-radius:999px;margin-right:6px'>{t}</span>" for t in chips]),
+            unsafe_allow_html=True
+        )
+
+    st.divider()
+
+    c1, c2, c3 = st.columns([1.1, 1.1, 1])
+    with c1:
+        st.subheader("📰 Sentiment")
+        pos = float(pcts.get("positive", 0.0)); neu = float(pcts.get("neutral", 0.0)); neg = float(pcts.get("negative", 0.0))
+        st.markdown(_sentiment_bar(pos, neu, neg))
+        st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
+        ins = rec.get("insight","").strip() or "—"
+        st.info(ins)
+
+    with c2:
+        st.subheader("⚠️ Risks")
+        risk_lines = []
+        if isinstance(liq_pct,(int,float)):
+            badge = "🔴" if liq_pct < 5 else ("🟠" if liq_pct < 10 else "🟢")
+            risk_lines.append(f"{badge} Liquidity: 24h vol is {liq_pct:.1f}% of market cap.")
+        arts = result.get("articles", []) or []
+        joined = " ".join([a.get("title","") for a in arts])[:3000]
+        if re.search(r"\b(sec|regulat|ban|lawsuit|enforcement|probe|review)\b", joined, re.I):
+            risk_lines.append("🟠 Regulatory: recent headlines mention reviews/enforcement.")
+        ex = result.get("explainability", {}) or {}
+        comps = ex.get("components", {}) or {}
+        ttl  = comps.get("total_score", None)
+        if ttl is not None:
+            score = max(0, min(100, int(round(50 + 50*float(ttl)))))
+            st.progress(score, text=f"Composite Score: {score}/100")
+        st.write("\n\n".join(risk_lines) if risk_lines else "No notable risks detected.")
+
+    with c3:
+        st.subheader("📈 Momentum & RSI")
+        insight = rec.get("insight","")
+        def pick(lbl):
+            for pat in [rf"^\*\*{re.escape(lbl)}\*\*\s*:?\s*(.+)$", rf"^{re.escape(lbl)}\s*:?\s*(.+)$"]:
+                for ln in [l.strip() for l in insight.splitlines() if l.strip()]:
+                    m = re.match(pat, ln, flags=re.I)
+                    if m: return m.group(0)
+            return "—"
+        st.write(f"• {pick('24-hour Momentum')}")
+        st.write(f"• {pick('7-day Momentum')}")
+        st.write(f"• {pick('RSI (14)')}")
+
+    st.divider()
+
+    st.subheader("🧠 Strategy Simulation")
+    pos = float(pcts.get("positive", 0.0)); neg = float(pcts.get("negative", 0.0))
+    sim_score = (pos - neg)/100.0
+    scenarios = generate_scenarios(sim_score,
+                                   rsi if isinstance(rsi,(int,float)) else float("nan"),
+                                   c24 if isinstance(c24,(int,float)) else float("nan"),
+                                   c7 if isinstance(c7,(int,float)) else float("nan"))
+    if scenarios:
+        for s in scenarios:
+            st.write(f"👉 {s}")
+    else:
+        st.info("No active strategic signals. Keep monitoring for a break above the short-term channel or RSI drift toward 60+.")
+
+    st.divider()
+
+    st.subheader(f"🔮 {horizon_days}-Day Forecast")
+    ft = result.get("forecast_table", []) or []
+    rows = []
+    for row in ft[:horizon_days]:
+        d = row.get("date")
+        dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
+        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
+        rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
+    if rows:
+        df = pd.DataFrame(rows).set_index("Date")
+        cL, cR = st.columns([1, 1.3])
+        with cL:
+            st.dataframe(df.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
+        with cR:
+            st.line_chart(df, height=260)
+    else:
+        st.caption("_No forecast available._")
+
+# =================================================================
+# 8) Build response (tiny change: return `result`)
+# =================================================================
 def build_single_response(user_message: str, session_id: str):
     parsed = parse_user_message(user_message)
     coin_id = parsed["coin_id"]
@@ -1023,7 +1166,7 @@ def build_single_response(user_message: str, session_id: str):
     if "error" in result:
         resp = f"Error: {result['error']}"
         save_conversation(session_id, "assistant", resp)
-        return resp, {}, "", None
+        return resp, {}, "", None, None
 
     pretty = make_pretty_output(result, h)
 
@@ -1079,11 +1222,11 @@ def build_single_response(user_message: str, session_id: str):
     save_conversation(session_id, "assistant", pretty, {"chart": chart_path, "explain_summary": friendly_ex_text})
     save_conversation(session_id, "assistant", json.dumps(ex), {"explain_full": True})
 
-    return pretty, ex, headlines_text, chart_path
+    return pretty, ex, headlines_text, chart_path, result
 
-# ---------------------------
-# STREAMLIT UI (replacing Gradio fully)
-# ---------------------------
+# =================================================================
+# 9) STREAMLIT APP (updated UI wiring)
+# =================================================================
 st.title("💬 Crypto Analyst (Streamlit)")
 st.caption("Ask about BTC, ETH, SOL, etc. Single-send → summary, explainability, headlines, chart. Educational only — not financial advice.")
 
@@ -1092,18 +1235,25 @@ if "session_id" not in st.session_state:
 if "chat" not in st.session_state:
     st.session_state.chat = []
 if "last_outputs" not in st.session_state:
-    st.session_state.last_outputs = {"pretty": "", "ex": {}, "heads": "", "chart": None}
+    st.session_state.last_outputs = {"pretty": "", "ex": {}, "heads": "", "chart": None, "result_for_ui": None, "horizon": 7}
 
 col_in1, col_in2 = st.columns([4,1])
 with col_in1:
-    user_message = st.text_input("Your message", placeholder="Type your question (e.g. 'Should I buy Bitcoin?')")
+    user_message = st.text_input("Your message", placeholder="Type your question (e.g. 'ETH 7-day forecast' or 'Should I buy BTC?')")
 with col_in2:
     send_clicked = st.button("Send", use_container_width=True)
 
 if send_clicked and user_message.strip():
-    pretty_text, full_ex, headlines_text, chart_path = build_single_response(user_message, st.session_state.session_id)
+    pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(user_message, st.session_state.session_id)
     st.session_state.chat.append((user_message, pretty_text))
-    st.session_state.last_outputs = {"pretty": pretty_text, "ex": full_ex or {}, "heads": headlines_text, "chart": chart_path}
+    st.session_state.last_outputs = {
+        "pretty": pretty_text,
+        "ex": full_ex or {},
+        "heads": headlines_text,
+        "chart": chart_path,
+        "result_for_ui": result_obj,
+        "horizon": parse_user_message(user_message)["horizon_days"],
+    }
 
 # Chat transcript (simple)
 for u, a in st.session_state.chat:
@@ -1111,39 +1261,38 @@ for u, a in st.session_state.chat:
         st.markdown(f"**You:** {u}")
         st.markdown(a)
 
-# Tabs like in your Gradio app
+# Tabs like in your previous app
 summary_tab, explain_tab, headlines_tab, chart_tab = st.tabs(["📊 Summary", "🔎 Explainability", "📰 Headlines", "📈 Forecast Chart"])
 
 with summary_tab:
-    st.markdown(st.session_state.last_outputs["pretty"] or "_No summary yet._")
+    ui_result = st.session_state.last_outputs.get("result_for_ui")
+    if ui_result:
+        render_pretty_summary(ui_result, horizon_days=st.session_state.last_outputs.get("horizon", 7))
+        with st.expander("Raw summary (original pretty text)"):
+            st.markdown(st.session_state.last_outputs.get("pretty") or "_No summary yet._")
+    else:
+        st.info("Ask about a coin to generate the dashboard.")
 
 with explain_tab:
-    # Friendly summary
-    comps = (st.session_state.last_outputs["ex"] or {}).get("components", {})
+    comps = (st.session_state.last_outputs.get("ex") or {}).get("components", {})
     friendly = []
     total = comps.get("total_score", None)
     if total is not None:
-        if total > 0.05:
-            mood = "slightly bullish 📈"
-        elif total < -0.05:
-            mood = "slightly bearish 📉"
-        else:
-            mood = "neutral 😐"
+        mood = "slightly bullish 📈" if total > 0.05 else ("slightly bearish 📉" if total < -0.05 else "neutral 😐")
         friendly.append(f"Model score: {total:.3f} → {mood}")
     for k in ["rsi_component", "sentiment_component", "mom24_component", "mom7_component"]:
         if k in comps:
             friendly.append(f"{k.replace('_',' ').capitalize()}: {comps[k]:+.4f}")
     st.text("\n".join(friendly) or "No explainability yet.")
-
     st.divider()
     st.subheader("Full Technical Trace")
-    st.json(st.session_state.last_outputs["ex"] or {})
+    st.json(st.session_state.last_outputs.get("ex") or {})
 
 with headlines_tab:
-    st.text_area("Top Headlines (with sentiment)", value=st.session_state.last_outputs["heads"], height=240)
+    st.text_area("Top Headlines (with sentiment)", value=st.session_state.last_outputs.get("heads",""), height=260)
 
 with chart_tab:
-    if st.session_state.last_outputs["chart"]:
+    if st.session_state.last_outputs.get("chart"):
         st.image(st.session_state.last_outputs["chart"], caption="Price & Forecast Chart")
     else:
         st.info("Run a query to see the chart.")
