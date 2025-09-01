@@ -1073,7 +1073,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.markdown("**Price**")
         st.markdown(f"<span style='font-size:2rem;font-weight:800'>$ {price:,.2f}</span>", unsafe_allow_html=True)
         st.markdown(
-            f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24 if isinstance(c24,(int,float)) else '—'}% · 24h</span>",
+            f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>" if isinstance(c24,(int,float)) else "—",
             unsafe_allow_html=True
         )
         # Big recommendation badge
@@ -1087,7 +1087,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.metric("Market Cap", _fmt_money(mcap))
         st.metric("24h Volume", _fmt_money(vol24))
     with cols[2]:
-        st.metric("7d Change", f"{c7 if isinstance(c7,(int,float)) else '—'}%")
+        st.metric("7d Change", f"{c7:.2f}%" if isinstance(c7,(int,float)) else "—")
         st.metric("RSI (14)", f"{rsi:.1f}" if isinstance(rsi,(int,float)) else "—")
     with cols[3]:
         st.write("**Quick tags**")
