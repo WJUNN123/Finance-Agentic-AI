@@ -1349,10 +1349,7 @@ def build_single_response(user_message: str, session_id: str):
 
     # ⚠️ Gentle notice if history is missing (likely CoinGecko 429 rate limit)
     if isinstance(result.get("history"), pd.DataFrame) and result["history"].empty:
-        st.info(
-            "⚠️ Market history is temporarily unavailable due to data source rate limiting. "
-            "You may see limited RSI or forecast data — please try again in a few minutes."
-        )
+    st.info("⚠️ Market history is temporarily unavailable due to data-source rate limiting. Try again in a minute.")
 
     # Keep original pretty-text summary (optional, shown in an expander)
     pretty = make_pretty_output(result, horizon_days)
@@ -1485,19 +1482,19 @@ if "last_outputs" not in st.session_state:
     }
 
 # ---- Quick actions (functional chips) ----------------------------------------
-def _chip_row(labels, prefix_key, fill_text_fn, columns=6, autosend=True):
+def chip_row(labels, prefix_key, value_from_label, columns=6, autosend=True):
     cols = st.columns(columns)
     for i, label in enumerate(labels):
         col = cols[i % columns]
         with col:
             if st.button(label, key=f"{prefix_key}_{i}", use_container_width=True):
-                # Fill the input
-                st.session_state.user_text = fill_text_fn(label)
-                # Optional: auto-send right away
-                st.session_state.autosend = autosend
-                st.rerun()
+                # Fill the text input value
+                st.session_state["user_text"] = value_from_label(label)
+                # Set a one-shot flag to auto-send right after input renders
+                if autosend:
+                    st.session_state["trigger_send"] = True
 
-# Tiny CSS to make st.button look like rounded chips
+# Chip button styling (rounded pill look)
 st.markdown("""
 <style>
 div.stButton > button {
@@ -1515,9 +1512,9 @@ with st.container():
     with colA:
         st.markdown("##### Quick coins")
         coin_labels = [c["name"] for c in DEFAULT_COINS]
-        def _coin_fill(label):  # e.g. "Bitcoin 7-day forecast"
-            return f"{label} 7-day forecast"
-        _chip_row(coin_labels, "coinchip", _coin_fill, columns=6, autosend=True)
+        def coin_fill(lbl):  # e.g. "Bitcoin 7-day forecast"
+            return f"{lbl} 7-day forecast"
+        chip_row(coin_labels, "coinchip", coin_fill, columns=6, autosend=True)
 
     with colB:
         st.markdown("##### Suggested prompts")
@@ -1527,40 +1524,38 @@ with st.container():
             "SOL sentiment and risks",
             "ADA next week outlook",
         ]
-        def _prompt_fill(label):
-            return label
-        _chip_row(prompts, "promptchip", _prompt_fill, columns=4, autosend=True)
-
+        chip_row(prompts, "promptchip", lambda s: s, columns=4, autosend=True)
+        
 # ---- Input card --------------------------------------------------------------
 with st.container():
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
 
-    # Use the value set by chips if present
-    default_text = st.session_state.get("user_text", "")
+    # Bind to session so chips can pre-fill this
     user_message = st.text_input(
         label="",
-        value=default_text,
+        value=st.session_state.get("user_text", ""),
         placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
-        key="user_text",  # keep bound to session state
+        key="user_text",
     )
 
-    # Send button BELOW input (full width)
+    # Full-width button under the input
     send_clicked = st.button("Send", use_container_width=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- Handle send -------------------------------------------------------------
-# If a chip requested auto-send, simulate a click
-if st.session_state.get("autosend", False) and st.session_state.get("user_text", "").strip():
+# If a chip was clicked with autosend, consume the flag and force send
+if st.session_state.pop("trigger_send", False) and st.session_state.get("user_text", "").strip():
     send_clicked = True
-    # reset the flag so it doesn't keep firing
-    st.session_state.autosend = False
 
 if send_clicked and st.session_state.get("user_text", "").strip():
     user_message = st.session_state["user_text"]
+
     pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
         user_message, st.session_state.session_id
     )
+
     st.session_state.last_outputs = {
         "pretty": pretty_text,
         "ex": full_ex or {},
