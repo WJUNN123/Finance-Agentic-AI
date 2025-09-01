@@ -171,6 +171,19 @@ def compute_rsi(prices: pd.Series, period: int = 14) -> float:
     rsi = 100 - (100 / (1 + rs))
     return float(rsi.iloc[-1])
 
+def rsi_series(prices: pd.Series, period: int = 14) -> pd.Series:
+    """Vector RSI for model features."""
+    if prices is None or len(prices) < period + 1:
+        return pd.Series(index=prices.index, dtype=float)
+    delta = prices.diff()
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+    avg_gain = gains.rolling(window=period, min_periods=period).mean()
+    avg_loss = losses.rolling(window=period, min_periods=period).mean()
+    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
 # ---------------------------
 # RSS news fetcher
 # ---------------------------
@@ -272,11 +285,26 @@ def sentiment_percentages(analyses: List[Dict]) -> Dict[str, float]:
 # Prophet forecasting
 # ---------------------------
 def forecast_with_prophet(price_series: pd.Series, days: int = 7) -> Tuple[pd.DataFrame, dict]:
+    """
+    Tuned Prophet:
+    - multiplicative seasonality (crypto often scales with price)
+    - higher changepoint_prior_scale so it adapts faster
+    - wider changepoint_range to allow recent trend shifts
+    """
     if price_series is None or len(price_series) < 30:
         return pd.DataFrame(), {"error": "Not enough history for Prophet (need >= 30 points)."}
+
     df = price_series.reset_index().rename(columns={price_series.name: "y", "index": "ds"})
     df = df.rename(columns={df.columns[0]: "ds", df.columns[1]: "y"})
-    m = Prophet(daily_seasonality=True, weekly_seasonality=True)
+
+    m = Prophet(
+        daily_seasonality=True,
+        weekly_seasonality=True,
+        seasonality_mode="multiplicative",
+        changepoint_prior_scale=0.25,  # <- more reactive (default 0.05)
+        changepoint_range=0.9,         # <- allow changepoints deep into recent history
+        growth="linear"
+    )
     try:
         m.fit(df)
         future = m.make_future_dataframe(periods=days)
@@ -284,7 +312,7 @@ def forecast_with_prophet(price_series: pd.Series, days: int = 7) -> Tuple[pd.Da
         summary = {}
         if not forecast.empty:
             future_rows = forecast.tail(days)
-            last_hat = float(future_rows["yhat"].iloc[-1])
+            last_hat   = float(future_rows["yhat"].iloc[-1])
             last_upper = float(future_rows["yhat_upper"].iloc[-1])
             last_lower = float(future_rows["yhat_lower"].iloc[-1])
             summary = {"pred_last": last_hat, "upper": last_upper, "lower": last_lower}
@@ -309,37 +337,109 @@ def train_and_forecast_lstm(price_series: pd.Series,
                             horizon: int = 7,
                             window: int = LSTM_WINDOW,
                             epochs: int = LSTM_EPOCHS):
-    if price_series is None or len(price_series) < window + 10:
+    """
+    Tuned LSTM:
+    - Features: log-returns, 7/14-day MA distance, RSI(14)
+    - Short, responsive window
+    - Same interface/output
+    """
+    if price_series is None or len(price_series) < window + 20:
         return []
 
-    series = price_series.astype(float).reset_index(drop=True)
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(series.values.reshape(-1, 1)).flatten()
+    # Build feature dataframe
+    s = price_series.astype(float).copy()
+    df = pd.DataFrame({
+        "price": s,
+        "ret": np.log(s).diff(),                        # log-return
+    })
+    df["ma7"]  = s.rolling(7).mean()
+    df["ma14"] = s.rolling(14).mean()
+    df["ma7_dist"]  = (s - df["ma7"]) / s
+    df["ma14_dist"] = (s - df["ma14"]) / s
+    df["rsi14"] = rsi_series(s, 14)
 
+    # Drop warm-up NaNs
+    df = df.dropna().copy()
+    if df.empty or len(df) < window + horizon:
+        return []
+
+    # Feature matrix
+    feats = df[["ret", "ma7_dist", "ma14_dist", "rsi14"]].values
+    y_price = df["price"].values
+
+    # Scale each feature independently
+    scaler_X = MinMaxScaler()
+    X_scaled = scaler_X.fit_transform(feats)
+
+    scaler_y = MinMaxScaler()
+    y_scaled = scaler_y.fit_transform(y_price.reshape(-1, 1)).flatten()
+
+    # Build sliding windows
     X, y = [], []
-    for i in range(window, len(scaled)):
-        X.append(scaled[i - window:i])
-        y.append(scaled[i])
+    for i in range(window, len(X_scaled)):
+        X.append(X_scaled[i - window:i, :])   # window x features
+        y.append(y_scaled[i])
     X, y = np.array(X), np.array(y)
-    X = X.reshape((X.shape[0], X.shape[1], 1))
 
+    # Train/val split
     split = int(len(X) * 0.9)
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
 
-    model = build_lstm_model((window, 1))
+    # Model (slightly larger; still light)
+    model = Sequential()
+    model.add(LSTM(64, input_shape=(window, X.shape[2]), return_sequences=True))
+    model.add(Dropout(0.15))
+    model.add(LSTM(32, return_sequences=False))
+    model.add(Dropout(0.10))
+    model.add(Dense(1, activation="linear"))
+    model.compile(optimizer="adam", loss="mse")
+
     es = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
-    model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=epochs, batch_size=LSTM_BATCH, callbacks=[es], verbose=0)
+    model.fit(X_train, y_train, validation_data=(X_val, y_val),
+              epochs=epochs, batch_size=LSTM_BATCH, callbacks=[es], verbose=0)
 
+    # Recursive forecast on scaled features
     preds_scaled = []
-    last_window = scaled[-window:].tolist()
-    for _ in range(horizon):
-        x_in = np.array(last_window[-window:]).reshape((1, window, 1))
-        yhat = model.predict(x_in, verbose=0)[0][0]
-        preds_scaled.append(yhat)
-        last_window.append(yhat)
+    last_feat_window = X_scaled[-window:, :].copy()
 
-    preds = scaler.inverse_transform(np.array(preds_scaled).reshape(-1, 1)).flatten().tolist()
+    # We’ll roll forward using naive feature updates:
+    # - next ret is unknown -> set to 0 (drift)
+    # - ma distances recompute from last price
+    # - rsi carried forward slightly (kept last value)
+    last_price = y_price[-1]
+    last_rsi   = df["rsi14"].iloc[-1]
+    for _ in range(horizon):
+        x_in = last_feat_window.reshape((1, window, X.shape[2]))
+        yhat_scaled = model.predict(x_in, verbose=0)[0][0]
+        preds_scaled.append(yhat_scaled)
+
+        # Inverse scale predicted price
+        next_price = scaler_y.inverse_transform([[yhat_scaled]])[0][0]
+
+        # Build next feature row (approximate)
+        next_ret = 0.0
+        next_ma7  = ( (df["price"].tail(6).tolist() + [next_price]) )
+        next_ma14 = ( (df["price"].tail(13).tolist() + [next_price]) )
+        ma7_val  = np.mean(next_ma7)
+        ma14_val = np.mean(next_ma14)
+        ma7_dist  = (next_price - ma7_val) / next_price if next_price != 0 else 0.0
+        ma14_dist = (next_price - ma14_val) / next_price if next_price != 0 else 0.0
+
+        # Keep RSI near last value to avoid unstable recursion
+        rsi_next = last_rsi
+
+        feat_next = np.array([[next_ret, ma7_dist, ma14_dist, rsi_next]])
+        feat_next_scaled = scaler_X.transform(feat_next)
+
+        # Slide window
+        last_feat_window = np.vstack([last_feat_window[1:], feat_next_scaled])
+
+        # Update buffers
+        last_price = next_price
+        last_rsi   = rsi_next
+
+    preds = scaler_y.inverse_transform(np.array(preds_scaled).reshape(-1, 1)).flatten().tolist()
     return preds
 
 # ---------------------------
@@ -368,7 +468,7 @@ def plot_history_forecasts_to_file(hist: pd.DataFrame, prophet_forecast: pd.Data
     if lstm_preds and prophet_forecast is not None and not prophet_forecast.empty:
         try:
             prophet_vals = prophet_forecast["yhat"].tail(len(lstm_preds)).values
-            ensemble_vals = (np.array(lstm_preds) + prophet_vals) / 2.0
+            ensemble_vals = 0.7 * np.array(lstm_preds) + 0.3 * prophet_vals
             last_dt = hist.index[-1]
             future_index = [last_dt + pd.Timedelta(days=i+1) for i in range(len(ensemble_vals))]
             ax.plot(future_index, ensemble_vals, linestyle="-.", linewidth=1.6, label="Ensemble (Prophet+LSTM)")
@@ -739,11 +839,11 @@ def analyze_coin(coin_id: str,
             lstm_val = None
         ensemble_val = None
         if (prophet_val is not None) and (lstm_val is not None):
-            ensemble_val = float((prophet_val + lstm_val) / 2.0)
-        elif prophet_val is not None:
-            ensemble_val = float(prophet_val)
+            ensemble_val = float(0.3 * prophet_val + 0.7 * lstm_val)
         elif lstm_val is not None:
             ensemble_val = float(lstm_val)
+        elif prophet_val is not None:
+            ensemble_val = float(prophet_val)
         forecast_table.append({
             "day": day,
             "date": date,
