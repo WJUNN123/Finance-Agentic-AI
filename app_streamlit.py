@@ -1200,13 +1200,16 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     st.divider()
 
-    # =========================
+     # =========================
     # Forecast (last 6M history + next N-day forecast)
     # =========================
     st.subheader(f"🔮 {horizon_days}-Day Forecast")
 
-    # 1) Table: next N days
+    hist_df = result.get("history")
+    hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
     ft = result.get("forecast_table", []) or []
+
+    # Build forecast rows for table
     rows = []
     for row in ft[:horizon_days]:
         d = row.get("date")
@@ -1214,48 +1217,65 @@ def render_pretty_summary(result, horizon_days: int = 7):
         v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
         rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
 
-    # 2) Series: last 6 months of history (NO boolean ops on DataFrame)
-    hist_df = result.get("history")
-    history_series = pd.Series(dtype=float)
-    if isinstance(hist_df, pd.DataFrame) and (not hist_df.empty) and ("price" in hist_df.columns):
-        last_ts = hist_df.index.max()
-        cutoff = last_ts - pd.Timedelta(days=180)
-        hist6 = hist_df.loc[hist_df.index >= cutoff]
-        history_series = hist6["price"].astype(float)
-
-    # 3) Series: next N-day forecast (ensemble -> prophet -> lstm)
-    future_points = {}
-    for row in ft[:horizon_days]:
-        d = row.get("date")
-        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
-        if d is not None and v is not None:
-            future_points[d] = float(v)
-    forecast_series = pd.Series(future_points, dtype=float) if len(future_points) > 0 else pd.Series(dtype=float)
-
-    # 4) Combine into one DataFrame for plotting (no ambiguous truthiness)
-    combined = pd.DataFrame()
-    if not history_series.empty:
-        combined["History"] = history_series
-    if not forecast_series.empty:
-        combined["Forecast"] = forecast_series
-    combined = combined.sort_index()
-
-    # 5) Layout: table (left) + combined chart (right)
-    if len(rows) > 0:
-        df_table = pd.DataFrame(rows).set_index("Date")
-        cL, cR = st.columns([1, 1.6])
+    if rows:
+        df_forecast = pd.DataFrame(rows).set_index("Date")
+        cL, cR = st.columns([1, 1.3])
         with cL:
-            st.dataframe(df_table.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
+            st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
+
         with cR:
+            # Combine 6M history with forecast
+            combined = pd.DataFrame()
+            if not hist_df.empty and "price" in hist_df.columns:
+                combined["History"] = hist_df["price"].tail(180)
+
+            if not df_forecast.empty:
+                try:
+                    forecast_vals = df_forecast["Forecast ($)"].astype(float)
+                    forecast_vals.index = pd.to_datetime(df_forecast.index)
+                    combined = pd.concat([combined, forecast_vals.rename("Forecast")])
+                except Exception:
+                    pass
+
             if not combined.empty:
-                st.line_chart(combined, height=300, use_container_width=True)
+                import altair as alt
+                df_plot = combined.copy()
+
+                # Ensure datetime index is tz-naive
+                try:
+                    df_plot.index = df_plot.index.tz_convert(None)
+                except Exception:
+                    try:
+                        df_plot.index = df_plot.index.tz_localize(None)
+                    except Exception:
+                        pass
+
+                plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
+                plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
+
+                # Color: blue for history, red for forecast
+                color_scale = alt.Scale(
+                    domain=["History", "Forecast"],
+                    range=["#4e79a7", "#ff4d4f"]
+                )
+
+                base = alt.Chart(plot_df).encode(
+                    x=alt.X("Date:T", title="Date"),
+                    y=alt.Y("Value:Q", title="Price (USD)"),
+                    color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
+                    tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
+                )
+
+                # line + red dots on forecast
+                lines = base.mark_line(size=2)
+                points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
+
+                st.altair_chart((lines + points).interactive(), use_container_width=True)
             else:
-                st.caption("_No history/forecast to chart._")
+                st.caption("_No forecast available._")
+
     else:
-        if not combined.empty:
-            st.line_chart(combined, height=300, use_container_width=True)
-        else:
-            st.caption("_No forecast available._")
+        st.caption("_No forecast available._")
 
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
