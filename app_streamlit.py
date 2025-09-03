@@ -1460,11 +1460,16 @@ if not openai.api_key:
 else:
     st.write("OpenAI API key is successfully set.")
 
+# Custom function to handle serialization of non-serializable types
 def custom_json_serializer(obj):
     if isinstance(obj, np.ndarray):  # If the object is a NumPy array
         return obj.tolist()  # Convert it to a list
     elif isinstance(obj, set):  # If it's a set, convert it to a list
         return list(obj)
+    elif isinstance(obj, pd.DataFrame):  # If it's a pandas DataFrame
+        return obj.to_dict()  # Convert it to a dictionary
+    elif isinstance(obj, tf.Tensor):  # If it's a TensorFlow tensor
+        return obj.numpy().tolist()  # Convert Tensor to a list
     # You can add more conditions here for other types if necessary
     raise TypeError(f"Type {obj.__class__.__name__} not serializable")
 
