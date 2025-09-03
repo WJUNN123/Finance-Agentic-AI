@@ -30,6 +30,7 @@ import uuid
 import sqlite3
 import joblib
 import io
+import openai
 
 # UI
 import streamlit as st
@@ -474,14 +475,15 @@ def scale(x, lo, hi):
         return 0.0
     return max(-1.0, min(1.0, 2 * (x - lo) / (hi - lo) - 1))
 
-OPENAI_API_KEY = None
-try:
-    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
-except Exception:
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
+# Try to get the OpenAI API key from Streamlit Secrets or environment variables
+openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
+
+# If the key is missing, display an error
+if not openai.api_key:
+    st.error("OpenAI API key is missing. Please add it to Streamlit Secrets or set it as an environment variable.")
+else:
+    st.write("OpenAI API key is successfully set.")
 
 # ===================================================================
 # STEP 3: Add these new helper functions before your existing functions
