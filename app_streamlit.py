@@ -1393,38 +1393,7 @@ if user_message:
 # Streamlit page setup
 st.set_page_config(page_title="Crypto Analyst — Streamlit", layout="wide")
 
-# ---- Header ---------------------------------------------------------------
-st.markdown("""
-<style>
-/* Overall spacing */
-.block-container { padding-top: 1.8rem; padding-bottom: 2.4rem; }
-
-/* Cards */
-.card { background: #0b1220; border: 1px solid #1f2a44; border-radius: 16px; padding: 16px 18px; }
-.card > h3, .card > h4 { margin-top: 0; }
-
-/* Buttons & chips */
-button[kind="primary"] { border-radius: 12px !important; }
-.chips span{
-  display:inline-block; padding:6px 10px; border-radius:999px; margin:4px 6px 0 0;
-  border:1px solid #233047; color:#dfe8ff; background:#0e1726; font-size:.88rem; cursor:pointer;
-}
-.chips span:hover{ background:#122038; }
-
-/* Headings */
-h1, h2, h3 { letter-spacing:.01em; }
-.app-title{ display:flex; align-items:center; gap:.6rem; }
-.app-title .logo{
-  width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center;
-  background:linear-gradient(135deg,#7c3aed33,#06b6d433); border:1px solid #24324a; border-radius:12px;
-  font-size:1.1rem;
-}
-.app-subtitle{ color:#96a7bf; margin:-.15rem 0 1.1rem 0; }
-
-</style>
-""", unsafe_allow_html=True)
-
-# ---- Session state -----------------------------------------------------------
+# Session state initialization
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "last_outputs" not in st.session_state:
@@ -1437,7 +1406,16 @@ if "last_outputs" not in st.session_state:
         "horizon": 7,
     }
 
-# ---- Quick actions -----------------------------------------------------------
+# ---- Header (top of the app) --------------------------------------------------
+st.markdown("""
+<style>
+/* Styling adjustments for the header */
+.app-title{ font-size: 2rem; font-weight: 800; }
+.app-subtitle { font-size: 1rem; color: #8a8a8a; margin-top: 0.5rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# ---- Quick coins and prompts ---------------------------------------------------
 with st.container():
     colA, colB = st.columns([2, 3])
     with colA:
@@ -1462,9 +1440,8 @@ with st.container():
         ) + "</div>"
         st.markdown(html, unsafe_allow_html=True)
 
-# ---- Input card --------------------------------------------------------------
+# ---- User Input Card ----------------------------------------------------------
 with st.container():
-    # Ensure only one input field
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
 
@@ -1473,23 +1450,37 @@ with st.container():
         label="",
         value="",
         placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
-        key="user_text",  # Unique key for this input field
+        key="user_text",  # Unique key ensures only one input field
     )
-    # Single Send button for submitting the input
-    send_clicked = st.button("Send", use_container_width=True)
 
+    # Send button for submitting the input
+    send_clicked = st.button("Send", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ---- Handle send -------------------------------------------------------------
+# ---- Handle Send Action ------------------------------------------------------
 if send_clicked and user_message.strip():
     st.write(f"Received message: {user_message}")
-    
-    # Process the message and generate response (this is just for testing)
-    # For simplicity, echoing the message back here
+
+    # Example response processing (you should replace this with your logic)
+    # For now, echoing the message back here
     st.write(f"Echoed response: {user_message}")
 
-# ---- Render summary or an empty state ----------------------------------------
-# If there's any output, render it
+    # Build the response (you can replace this with your analysis and GPT-3 code)
+    pretty_text, full_ex, headlines_text, chart_path, generated_insight = build_single_response(
+        user_message, st.session_state.session_id
+    )
+
+    # Render generated insights
+    st.write("### Recommended Action/Insight:")
+    st.write(generated_insight)
+
+    # Render summary from analysis
+    render_pretty_summary(pretty_text, horizon_days=7)
+    if chart_path:
+        st.image(chart_path)
+
+# ---- Display or Empty State ---------------------------------------------------
+# If there's no output, prompt to ask about a coin
 ui_result = st.session_state.last_outputs.get("result_for_ui")
 if ui_result:
     render_pretty_summary(
