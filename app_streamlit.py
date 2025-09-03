@@ -479,6 +479,26 @@ def scale(x, lo, hi):
 # ===================================================================
 # STEP 3: Add these new helper functions before your existing functions
 # ===================================================================
+def recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days):
+    # This function generates a fallback recommendation based on basic rules
+    recommendation = "HOLD / WAIT"  # Default to HOLD/WAIT if no GPT-3 response
+    score = 0.5  # Neutral score (can be improved with your rule-based logic)
+    
+    if sentiment > 0.5:
+        recommendation = "BUY"
+        score = 0.7
+    elif sentiment < -0.5:
+        recommendation = "SELL / AVOID"
+        score = 0.3
+    # Further conditions can be added here based on other factors like price change, RSI, etc.
+
+    return {
+        "rating": recommendation,
+        "score": score,
+        "insight": f"Based on sentiment {sentiment}, the recommendation is {recommendation}.",
+        "source": "fallback"
+    }
+
 def call_gpt3_for_insight(
     coin_id: str,
     coin_symbol: str,
@@ -496,12 +516,10 @@ def call_gpt3_for_insight(
     max_tokens: int = 500,
     temperature: float = 0.3
 ) -> Dict:
-    """Call GPT-3.5 to generate personalized insights and recommendations"""
+    """Call GPT-3 to generate personalized insights and recommendations"""
     
-    # Access the OpenAI API key from Streamlit Secrets or environment variables
     openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
     
-    # Continue with the existing logic to generate insights
     headlines_context = ""
     if top_headlines:
         headlines_context = f"\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
@@ -553,7 +571,7 @@ Format your response as a structured analysis. Be specific about price levels, t
 Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
     try:
-        # Using GPT-3.5 model via ChatCompletion
+        # Use GPT-3.5 model via ChatCompletion
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",  # GPT-3.5 model
             messages=[ 
