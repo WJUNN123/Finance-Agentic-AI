@@ -507,16 +507,21 @@ def call_gpt3_for_insight(
 ) -> Dict:
     """Call GPT-3 to generate personalized insights and recommendations"""
     
-    # Check if OpenAI API key is available
-    if not OPENAI_API_KEY:
-        return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
+    # Fetch the OpenAI API key from secrets or environment variable
+    if "openai" in st.secrets:
+        openai.api_key = st.secrets["openai"]["api_key"]
+    else:
+        openai.api_key = os.getenv("OPENAI_API_KEY")
     
+    if not openai.api_key:
+        return {"error": "OpenAI API key missing. Please add it to Streamlit Secrets or set it as an environment variable."}
+    
+    # Continue with the existing logic to generate insights
     headlines_context = ""
     if top_headlines:
         headlines_context = f"\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
 
     def safe_format(val, default="N/A", format_str="{:.2f}"):
-        """Helper function to safely format values"""
         if val is None or (isinstance(val, float) and math.isnan(val)):
             return default
         return format_str.format(val)
