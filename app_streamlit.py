@@ -1476,16 +1476,18 @@ with st.container():
 
 # ---- Input card --------------------------------------------------------------
 with st.container():
+    # Only one input field should be used for user input
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
 
-    # Condense input field and button logic into one area
+    # User input field
     user_message = st.text_input(
         label="",
         value="",
         placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
-        key="user_text",
+        key="user_text",  # Ensure the key is unique to avoid UI duplication
     )
+
     # Send button for submitting the input
     send_clicked = st.button("Send", use_container_width=True)
 
