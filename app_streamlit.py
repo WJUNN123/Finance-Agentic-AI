@@ -1460,27 +1460,45 @@ if not openai.api_key:
 else:
     st.write("OpenAI API key is successfully set.")
 
+def custom_json_serializer(obj):
+    if isinstance(obj, np.ndarray):  # If the object is a NumPy array
+        return obj.tolist()  # Convert it to a list
+    elif isinstance(obj, set):  # If it's a set, convert it to a list
+        return list(obj)
+    # You can add more conditions here for other types if necessary
+    raise TypeError(f"Type {obj.__class__.__name__} not serializable")
+
+# Updated generate_insight_with_gpt3 function
 def generate_insight_with_gpt3(user_message: str, historical_data: dict) -> str:
     """
     Generate actionable insights using GPT-3 based on the user's message and market data.
     """
-    input_text = f"""
-    User's query: {user_message}
-    Based on the following market data:
-    {json.dumps(historical_data, indent=2)}
+    try:
+        # Serialize the historical data using the custom serializer
+        historical_data_json = json.dumps(historical_data, indent=2, default=custom_json_serializer)
 
-    What is the recommended action or insight based on this data? Please provide clear recommendations like 'BUY', 'HOLD', 'SELL', or 'WAIT'.
-    """
-    
-    # GPT-3 API call to generate insight
-    response = openai.Completion.create(
-        engine="text-davinci-003",  # You can choose a different GPT-3 model
-        prompt=input_text,
-        max_tokens=200,
-        temperature=0.7,  # Control creativity
-    )
+        # Format the input text for GPT-3
+        input_text = f"""
+        User's query: {user_message}
+        Based on the following market data:
+        {historical_data_json}
 
-    return response.choices[0].text.strip()
+        What is the recommended action or insight based on this data? Please provide clear recommendations like 'BUY', 'HOLD', 'SELL', or 'WAIT'.
+        """
+        
+        # GPT-3 API call to generate insight
+        response = openai.Completion.create(
+            engine="text-davinci-003",  # Or another GPT model
+            prompt=input_text,
+            max_tokens=200,
+            temperature=0.7,
+        )
+
+        return response.choices[0].text.strip()
+
+    except TypeError as e:
+        # Handle any serialization errors gracefully
+        return f"Error serializing data: {e}"
 
 def build_single_response(user_message: str, session_id: str):
     """
