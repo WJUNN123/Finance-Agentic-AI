@@ -476,15 +476,6 @@ def scale(x, lo, hi):
     return max(-1.0, min(1.0, 2 * (x - lo) / (hi - lo) - 1))
 
 
-# Try to get the OpenAI API key from Streamlit Secrets or environment variables
-openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
-
-# If the key is missing, display an error
-if not openai.api_key:
-    st.error("OpenAI API key is missing. Please add it to Streamlit Secrets or set it as an environment variable.")
-else:
-    st.write("OpenAI API key is successfully set.")
-
 # ===================================================================
 # STEP 3: Add these new helper functions before your existing functions
 # ===================================================================
@@ -507,14 +498,9 @@ def call_gpt3_for_insight(
 ) -> Dict:
     """Call GPT-3 to generate personalized insights and recommendations"""
     
-    # Fetch the OpenAI API key from secrets or environment variable
-    if "openai" in st.secrets:
-        openai.api_key = st.secrets["openai"]["api_key"]
-    else:
-        openai.api_key = os.getenv("OPENAI_API_KEY")
-    
-    if not openai.api_key:
-        return {"error": "OpenAI API key missing. Please add it to Streamlit Secrets or set it as an environment variable."}
+    ## Try to get the OpenAI API key from Streamlit Secrets or environment variables
+    openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
+
     
     # Continue with the existing logic to generate insights
     headlines_context = ""
