@@ -4,14 +4,14 @@ prophet
 tensorflow==2.20.0
 tf-keras
 sentence-transformers
-faiss-cpu
+faiss-cpu  # Use faiss-gpu if you're using a GPU
 shap
 pandas
 numpy
 matplotlib
-openai
+openai>=1.0.0
 transformers
 plotly
 scikit-learn
 requests
-torch
+torch==1.13.1
