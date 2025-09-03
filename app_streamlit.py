@@ -1232,17 +1232,19 @@ if not openai.api_key:
 else:
     st.write("OpenAI API key is successfully set.")
 
-def gpt3_generate_insight_and_recommendation(sentiment: float, pct_24h: float, pct_7d: float, rsi: float, risk: str, horizon_days: int):
+# Define the GPT-3 API call
+def generate_insight_with_gpt3(user_message, historical_data):
+    # Construct the prompt for GPT-3
     prompt = f"""
-    Given the following financial data for a cryptocurrency:
-    Sentiment Score: {sentiment}
-    24h Change: {pct_24h}%
-    7-day Change: {pct_7d}%
-    RSI (14): {rsi}
-    Risk level: {risk}
-    Forecast horizon (days): {horizon_days}
-
-    Please generate a recommendation (Buy/Hold/Sell) and provide insights on the current market conditions. The recommendation should take into account the sentiment, momentum, RSI, and risk level. Also, provide reasoning for the recommendation.
+    User asked: {user_message}
+    The following financial data is available for the coin {historical_data["coin"]}:
+    Price: {historical_data["price"]}
+    Sentiment Score: {historical_data["sentiment_score"]}
+    RSI (14): {historical_data["rsi"]}
+    24h Change: {historical_data["pct_24h"]}%
+    7d Change: {historical_data["pct_7d"]}%
+    
+    Please generate actionable insights and recommendations (Buy/Hold/Sell) based on the data. Provide reasoning for the recommendation.
     """
 
     response = openai.Completion.create(
@@ -1254,9 +1256,9 @@ def gpt3_generate_insight_and_recommendation(sentiment: float, pct_24h: float, p
         temperature=0.7,
     )
 
-    recommendation = response.choices[0].text.strip()
-    return recommendation
-
+    insight = response.choices[0].text.strip()
+    return insight
+    
 def build_single_response(user_message: str, session_id: str):
     """
     This function integrates the process to generate actionable insights and recommendations.
@@ -1324,7 +1326,6 @@ if user_message:
     render_pretty_summary(pretty_text, horizon_days=7)
     if chart_path:
         st.image(chart_path)
-
 
 # =================================================================
 # 9) STREAMLIT APP (Summary-only UI, polished with Send below input)
