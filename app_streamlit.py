@@ -564,11 +564,9 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
 
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", 
-                 "content": "You are a professional cryptocurrency analyst. Always include risk disclaimers and remind users this is educational content, not financial advice."
-                },
+            model="text-davinci-003",  # Switch to GPT-3 model
+            messages=[ 
+                {"role": "system", "content": "You are a professional cryptocurrency analyst."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=max_tokens,
@@ -577,7 +575,6 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
             frequency_penalty=0.1,
             presence_penalty=0.1
         )
-        
         gpt_response = response.choices[0].message.content.strip()
         rating = extract_recommendation(gpt_response)
         score = calculate_score_from_response(gpt_response, sentiment, pct_24h, pct_7d, rsi)
