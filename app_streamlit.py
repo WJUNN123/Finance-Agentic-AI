@@ -501,7 +501,6 @@ def call_gpt3_for_insight(
     ## Try to get the OpenAI API key from Streamlit Secrets or environment variables
     openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
 
-    
     # Continue with the existing logic to generate insights
     headlines_context = ""
     if top_headlines:
@@ -554,19 +553,21 @@ Format your response as a structured analysis. Be specific about price levels, t
 Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
     try:
-        response = openai.ChatCompletion.create(
-            model="text-davinci-003",  # Switch to GPT-3 model
-            messages=[ 
-                {"role": "system", "content": "You are a professional cryptocurrency analyst."},
-                {"role": "user", "content": prompt}
-            ],
+        # Use the Completion API for GPT-3 models
+        response = openai.Completion.create(
+            model="text-davinci-003",  # This is the GPT-3 model.
+            prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=0.9,
             frequency_penalty=0.1,
             presence_penalty=0.1
         )
-        gpt_response = response.choices[0].message.content.strip()
+        
+        # Extract the response text
+        gpt_response = response["choices"][0]["text"].strip()  # Adjusted to work with Completion API
+
+        # Extract the recommendation and calculate the score
         rating = extract_recommendation(gpt_response)
         score = calculate_score_from_response(gpt_response, sentiment, pct_24h, pct_7d, rsi)
         
