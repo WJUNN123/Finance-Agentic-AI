@@ -496,11 +496,11 @@ def call_gpt3_for_insight(
     max_tokens: int = 500,
     temperature: float = 0.3
 ) -> Dict:
-    """Call GPT-3 to generate personalized insights and recommendations"""
+    """Call GPT-3.5 to generate personalized insights and recommendations"""
     
-    ## Try to get the OpenAI API key from Streamlit Secrets or environment variables
+    # Access the OpenAI API key from Streamlit Secrets or environment variables
     openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
-
+    
     # Continue with the existing logic to generate insights
     headlines_context = ""
     if top_headlines:
@@ -553,10 +553,13 @@ Format your response as a structured analysis. Be specific about price levels, t
 Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
     try:
-        # Use the Completion API for GPT-3 models
-        response = openai.Completion.create(
-            model="text-davinci-003",  # This is the GPT-3 model.
-            prompt=prompt,
+        # Using GPT-3.5 model via ChatCompletion
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # GPT-3.5 model
+            messages=[ 
+                {"role": "system", "content": "You are a professional cryptocurrency analyst."},
+                {"role": "user", "content": prompt}
+            ],
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=0.9,
@@ -564,8 +567,8 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
             presence_penalty=0.1
         )
         
-        # Extract the response text
-        gpt_response = response["choices"][0]["text"].strip()  # Adjusted to work with Completion API
+        # Get the response text
+        gpt_response = response["choices"][0]["message"]["content"].strip()
 
         # Extract the recommendation and calculate the score
         rating = extract_recommendation(gpt_response)
@@ -575,11 +578,11 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
             "rating": rating,
             "score": score,
             "insight": gpt_response,
-            "source": "gpt3"
+            "source": "gpt-3.5"
         }
         
     except Exception as e:
-        st.warning(f"GPT-3 API error: {e}. Falling back to rule-based analysis.")
+        st.warning(f"GPT-3.5 API error: {e}. Falling back to rule-based analysis.")
         fallback_result = recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
         fallback_result["source"] = "fallback"
         return fallback_result
