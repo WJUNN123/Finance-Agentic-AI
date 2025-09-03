@@ -1451,18 +1451,37 @@ def render_pretty_summary(result, horizon_days: int = 7):
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
 # =================================================================
+openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
+
+def generate_insight_with_gpt3(user_message: str, historical_data: dict) -> str:
+    """
+    Generate actionable insights using GPT-3 based on the user's message and market data.
+    """
+    input_text = f"""
+    User's query: {user_message}
+    Based on the following market data:
+    {json.dumps(historical_data, indent=2)}
+
+    What is the recommended action or insight based on this data? Please provide clear recommendations like 'BUY', 'HOLD', 'SELL', or 'WAIT'.
+    """
+    
+    # GPT-3 API call to generate insight
+    response = openai.Completion.create(
+        engine="text-davinci-003",  # You can choose a different GPT-3 model
+        prompt=input_text,
+        max_tokens=200,
+        temperature=0.7,  # Control creativity
+    )
+
+    return response.choices[0].text.strip()
+
 def build_single_response(user_message: str, session_id: str):
     """
-    Single-shot pipeline:
-      1) parse intent (coin + horizon)
-      2) analyze (market, sentiment, forecast)
-      3) persist conversation + outputs
-      4) return:
-         - pretty: legacy pretty-text (kept for expander/debug)
-         - ex:     explainability dict
-         - heads:  headlines string
-         - chart:  path to chart image (if generated)
-         - result: full structured object for the Summary dashboard
+    This function integrates the process to generate actionable insights and recommendations.
+    It:
+    1. Parses user input (coin, horizon).
+    2. Runs analysis (market, sentiment, forecast).
+    3. Uses GPT-3 to generate actionable insights.
     """
     parsed = parse_user_message(user_message)
     coin_id = parsed["coin_id"]
@@ -1472,7 +1491,7 @@ def build_single_response(user_message: str, session_id: str):
     # Log user input
     save_conversation(session_id, "user", user_message)
 
-    # Core analysis
+    # Core analysis (fetch market data)
     result = analyze_coin(
         coin_id, coin_symbol,
         risk="Medium",
@@ -1480,77 +1499,49 @@ def build_single_response(user_message: str, session_id: str):
         forecast_days=horizon_days,
         model_choice="ensemble",
     )
+
     if "error" in result:
         resp = f"Error: {result['error']}"
         save_conversation(session_id, "assistant", resp)
         return resp, {}, "", None, None
 
-    # Keep original pretty-text summary (optional, shown in an expander)
+    # Build historical data dictionary for GPT-3
+    historical_data = {
+        "coin": coin_symbol,
+        "price": result["market"]["price_usd"],
+        "sentiment_score": result["sentiment_score"],
+        "rsi": result["market"]["rsi_14"],
+        "pct_24h": result["market"]["pct_change_24h"],
+        "pct_7d": result["market"]["pct_change_7d"],
+        "forecast": result.get("forecast_table", "")  # Example, adjust if needed
+    }
+
+    # Generate actionable insights from GPT-3
+    insight = generate_insight_with_gpt3(user_message, historical_data)
+
+    # Keep original pretty-text summary (optional)
     pretty = make_pretty_output(result, horizon_days)
 
-    # Friendly explainability summary (optional)
-    ex = result.get("explainability", {}) or {}
-    comps = ex.get("components", {}) or {}
-    friendly_ex = []
-    total_score = comps.get("total_score")
-    if isinstance(total_score, (int, float)):
-        exam_score = int(round(50 + 50 * total_score))
-        exam_score = max(0, min(100, exam_score))
-        if exam_score >= 80:
-            mood_text = "very bullish 📈"
-        elif exam_score >= 60:
-            mood_text = "slightly bullish 📈"
-        elif exam_score >= 40:
-            mood_text = "neutral ⚖️"
-        elif exam_score >= 20:
-            mood_text = "slightly bearish 📉"
-        else:
-            mood_text = "very bearish 📉"
-        friendly_ex.append(f"Score: {exam_score} → {mood_text}")
+    return pretty, result.get("explainability", {}), result.get("headlines", ""), result.get("chart", None), insight
 
-    def _describe_component(label, value, pos_hint, neg_hint):
-        if value > 0.02:
-            trend = "slightly bullish"
-            hint  = pos_hint
-        elif value < -0.02:
-            trend = "slightly bearish"
-            hint  = neg_hint
-        else:
-            trend = "neutral"
-            hint  = "balanced/flat"
-        return f"{label}: {value:+.4f} → {trend} ({hint})"
+# Streamlit interface
+st.title("Crypto Analyst")
 
-    if "rsi_component" in comps:
-        friendly_ex.append(_describe_component("RSI", comps["rsi_component"], "momentum improving", "risk of overbought/oversold"))
-    if "sentiment_component" in comps:
-        friendly_ex.append(_describe_component("Sentiment", comps["sentiment_component"], "news mildly positive", "news mildly negative"))
-    if "mom24_component" in comps:
-        friendly_ex.append(_describe_component("Mom24", comps["mom24_component"], "24h momentum positive", "24h momentum weak"))
-    if "mom7_component" in comps:
-        friendly_ex.append(_describe_component("Mom7", comps["mom7_component"], "7d momentum uptrend", "7d momentum flat/weak"))
+user_message = st.text_input("Ask me anything about cryptocurrency:")
 
-    friendly_ex_text = "\n".join(friendly_ex)
-
-    # Headlines text (optional)
-    if not result.get("sentiment_table", pd.DataFrame()).empty:
-        dfh = result["sentiment_table"]
-        headlines_text = "\n".join([f"{r['text']} → {r['label']} ({r['score']:.2f})" for _, r in dfh.head(6).iterrows()])
-    else:
-        headlines_text = "\n".join([a.get("title", "") for a in result.get("articles", [])[:6]])
-
-    # Chart file for the Chart tab (we keep generation; UI no longer shows it directly)
-    chart_path = plot_history_forecasts_to_file(
-        result.get("history", pd.DataFrame()),
-        result.get("prophet_df", pd.DataFrame()),
-        result.get("lstm_preds", []),
-        coin_id,
+if user_message:
+    pretty_text, full_ex, headlines_text, chart_path, generated_insight = build_single_response(
+        user_message, st.session_state.session_id
     )
 
-    # Persist assistant outputs
-    save_conversation(session_id, "assistant", pretty, {"chart": chart_path, "explain_summary": friendly_ex_text})
-    save_conversation(session_id, "assistant", json.dumps(ex), {"explain_full": True})
+    # Display the generated insight and recommendation
+    st.write("### Recommended Action/Insight:")
+    st.write(generated_insight)  # GPT-3 generated insights
 
-    return pretty, ex, headlines_text, chart_path, result
+    # You can add your existing display logic for the pretty output and charts
+    render_pretty_summary(pretty_text, horizon_days=7)
+    if chart_path:
+        st.image(chart_path)
 
 
 # =================================================================
