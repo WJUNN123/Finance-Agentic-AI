@@ -476,15 +476,70 @@ def scale(x, lo, hi):
     return max(-1.0, min(1.0, 2 * (x - lo) / (hi - lo) - 1))
 
 def recommend_and_insight(sentiment: float, pct_24h: float, pct_7d: float, rsi: float, risk: str, horizon_days: int) -> Dict:
-    # Get the insight and recommendation from GPT-3
-    recommendation = gpt3_generate_insight_and_recommendation(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
-    
-    # Extract the rating and insight from the GPT-3 response
-    rating = "BUY"  # Default value if GPT-3 doesn't provide a specific recommendation
-    insight_text = recommendation  # The entire GPT-3 response is used as the insight
+    # Scale values to improve readability
+    mom24 = scale(pct_24h, -15, 15)
+    mom7 = scale(pct_7d, -40, 40)
+    rsi_dev = 0.0
+    if not (isinstance(rsi, float) and math.isnan(rsi)):
+        if rsi >= 70: rsi_dev = -1.0
+        elif rsi <= 30: rsi_dev = 1.0
+        else: rsi_dev = (50 - rsi) / 20.0
 
-    # Return the generated recommendation and insight
-    return {"rating": rating, "score": 0.0, "insight": insight_text}
+    # Weights for sentiment, momentum, and RSI components
+    w_sent, w_m24, w_m7, w_rsi = 0.45, 0.2, 0.2, 0.15
+    risk = (risk or "Medium").lower()
+
+    if risk == "low":
+        w_m24 *= 0.8; w_m7 *= 0.8; w_rsi *= 1.2; w_sent *= 1.2
+        threshold_buy, threshold_sell = 0.35, -0.25
+    elif risk == "high":
+        w_m24 *= 1.2; w_m7 *= 1.2; w_rsi *= 0.8; w_sent *= 0.8
+        threshold_buy, threshold_sell = 0.25, -0.35
+    else:
+        threshold_buy, threshold_sell = 0.3, -0.3
+
+    # Adjust thresholds for different horizon days
+    if horizon_days <= 7:
+        threshold_buy += 0.05; threshold_sell -= 0.05
+    elif horizon_days >= 90:
+        threshold_buy -= 0.05; threshold_sell += 0.05
+
+    # Calculate overall score
+    score = (w_sent * sentiment + w_m24 * mom24 + w_m7 * mom7 + w_rsi * rsi_dev)
+
+    # Determine recommendation based on the score
+    if score >= threshold_buy:
+        rating = "BUY (speculative)" if risk == "high" and horizon_days <= 14 else "BUY"
+    elif score <= threshold_sell:
+        rating = "SELL / AVOID"
+    else:
+        rating = "HOLD / WAIT"
+
+    # Build the insight
+    pieces = []
+    if sentiment >= 0.4: pieces.append("**Sentiment**: Strong positive news sentiment. 📈")
+    elif sentiment >= 0.15: pieces.append("**Sentiment**: Moderately positive news sentiment. 📈")
+    elif sentiment <= -0.4: pieces.append("**Sentiment**: Strong negative news sentiment. 📉")
+    elif sentiment <= -0.15: pieces.append("**Sentiment**: Moderately negative news sentiment. 📉")
+    else: pieces.append("**Sentiment**: Neutral/mixed news sentiment. ⚖️ This suggests market uncertainty, and it's best to wait for clearer signals before making significant moves.")
+
+    if pct_24h is not None and not (isinstance(pct_24h, float) and math.isnan(pct_24h)):
+        if pct_24h > 5: pieces.append("**24-hour Momentum**: Strong short-term upward momentum. 📈")
+        elif pct_24h < -5: pieces.append("**24-hour Momentum**: Strong short-term downward momentum. 📉")
+        else: pieces.append("**24-hour Momentum**: No strong short-term momentum. ⚖️ The lack of significant price movement means you might want to hold off on any new investments for now.")
+
+    if pct_7d is not None and not (isinstance(pct_7d, float) and math.isnan(pct_7d)):
+        if pct_7d > 10: pieces.append("**7-day Momentum**: 7-day trend is strongly positive. 📈")
+        elif pct_7d < -10: pieces.append("**7-day Momentum**: 7-day trend is strongly negative. 📉")
+        else: pieces.append("**7-day Momentum**: Mild/moderate trend. 🔄 Over the past week, prices have remained relatively stable. It’s a signal that the market is in a consolidation phase.")
+
+    if not (isinstance(rsi, float) and math.isnan(rsi)):
+        if rsi >= 70: pieces.append("**RSI (14)**: RSI is high → market may be overbought. 📉")
+        elif rsi <= 30: pieces.append("**RSI (14)**: RSI is low → market may be oversold. 📈")
+        else: pieces.append("**RSI (14)**: Neutral range. 🧠 The current market is neither overbought nor oversold, implying a balanced risk. A neutral RSI suggests it's neither a great time to buy nor to sell.")
+
+    insight_text = "\n\n".join(pieces)
+    return {"rating": rating, "score": float(score), "insight": insight_text}
 
 # =================================================================
 # 1) MEMORY DB (exactly your code, unchanged)
@@ -1221,9 +1276,12 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     st.divider()
 
+
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
 # =================================================================
+
+# Try to get the OpenAI API key from Streamlit Secrets or environment variables
 openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
 
 # If the key is missing, display an error
@@ -1231,6 +1289,7 @@ if not openai.api_key:
     st.error("OpenAI API key is missing. Please add it to Streamlit Secrets or set it as an environment variable.")
 else:
     st.write("OpenAI API key is successfully set.")
+
 
 # Define the GPT-3 API call
 def generate_insight_with_gpt3(user_message, historical_data):
@@ -1258,7 +1317,7 @@ def generate_insight_with_gpt3(user_message, historical_data):
 
     insight = response.choices[0].text.strip()
     return insight
-    
+
 def build_single_response(user_message: str, session_id: str):
     """
     This function integrates the process to generate actionable insights and recommendations.
@@ -1326,6 +1385,7 @@ if user_message:
     render_pretty_summary(pretty_text, horizon_days=7)
     if chart_path:
         st.image(chart_path)
+
 
 # =================================================================
 # 9) STREAMLIT APP (Summary-only UI, polished with Send below input)
