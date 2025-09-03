@@ -1478,14 +1478,17 @@ with st.container():
 with st.container():
     st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
     st.markdown("**Your message**")
+
+    # Condense input field and button logic into one area
     user_message = st.text_input(
         label="",
         value="",
         placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
         key="user_text",
     )
-    # Send button moved BELOW input
+    # Send button for submitting the input
     send_clicked = st.button("Send", use_container_width=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- Handle send -------------------------------------------------------------
@@ -1493,6 +1496,7 @@ if send_clicked and user_message.strip():
     pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
         user_message, st.session_state.session_id
     )
+    # Store the response in session state
     st.session_state.last_outputs = {
         "pretty": pretty_text,
         "ex": full_ex or {},
