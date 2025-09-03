@@ -14,4 +14,4 @@ transformers
 plotly
 scikit-learn
 requests
-torch==1.13.1
+torch
