@@ -30,6 +30,7 @@ import uuid
 import sqlite3
 import joblib
 import io
+import openai
 
 # UI
 import streamlit as st
