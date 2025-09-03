@@ -476,70 +476,15 @@ def scale(x, lo, hi):
     return max(-1.0, min(1.0, 2 * (x - lo) / (hi - lo) - 1))
 
 def recommend_and_insight(sentiment: float, pct_24h: float, pct_7d: float, rsi: float, risk: str, horizon_days: int) -> Dict:
-    # Scale values to improve readability
-    mom24 = scale(pct_24h, -15, 15)
-    mom7 = scale(pct_7d, -40, 40)
-    rsi_dev = 0.0
-    if not (isinstance(rsi, float) and math.isnan(rsi)):
-        if rsi >= 70: rsi_dev = -1.0
-        elif rsi <= 30: rsi_dev = 1.0
-        else: rsi_dev = (50 - rsi) / 20.0
+    # Get the insight and recommendation from GPT-3
+    recommendation = gpt3_generate_insight_and_recommendation(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
+    
+    # Extract the rating and insight from the GPT-3 response
+    rating = "BUY"  # Default value if GPT-3 doesn't provide a specific recommendation
+    insight_text = recommendation  # The entire GPT-3 response is used as the insight
 
-    # Weights for sentiment, momentum, and RSI components
-    w_sent, w_m24, w_m7, w_rsi = 0.45, 0.2, 0.2, 0.15
-    risk = (risk or "Medium").lower()
-
-    if risk == "low":
-        w_m24 *= 0.8; w_m7 *= 0.8; w_rsi *= 1.2; w_sent *= 1.2
-        threshold_buy, threshold_sell = 0.35, -0.25
-    elif risk == "high":
-        w_m24 *= 1.2; w_m7 *= 1.2; w_rsi *= 0.8; w_sent *= 0.8
-        threshold_buy, threshold_sell = 0.25, -0.35
-    else:
-        threshold_buy, threshold_sell = 0.3, -0.3
-
-    # Adjust thresholds for different horizon days
-    if horizon_days <= 7:
-        threshold_buy += 0.05; threshold_sell -= 0.05
-    elif horizon_days >= 90:
-        threshold_buy -= 0.05; threshold_sell += 0.05
-
-    # Calculate overall score
-    score = (w_sent * sentiment + w_m24 * mom24 + w_m7 * mom7 + w_rsi * rsi_dev)
-
-    # Determine recommendation based on the score
-    if score >= threshold_buy:
-        rating = "BUY (speculative)" if risk == "high" and horizon_days <= 14 else "BUY"
-    elif score <= threshold_sell:
-        rating = "SELL / AVOID"
-    else:
-        rating = "HOLD / WAIT"
-
-    # Build the insight
-    pieces = []
-    if sentiment >= 0.4: pieces.append("**Sentiment**: Strong positive news sentiment. 📈")
-    elif sentiment >= 0.15: pieces.append("**Sentiment**: Moderately positive news sentiment. 📈")
-    elif sentiment <= -0.4: pieces.append("**Sentiment**: Strong negative news sentiment. 📉")
-    elif sentiment <= -0.15: pieces.append("**Sentiment**: Moderately negative news sentiment. 📉")
-    else: pieces.append("**Sentiment**: Neutral/mixed news sentiment. ⚖️ This suggests market uncertainty, and it's best to wait for clearer signals before making significant moves.")
-
-    if pct_24h is not None and not (isinstance(pct_24h, float) and math.isnan(pct_24h)):
-        if pct_24h > 5: pieces.append("**24-hour Momentum**: Strong short-term upward momentum. 📈")
-        elif pct_24h < -5: pieces.append("**24-hour Momentum**: Strong short-term downward momentum. 📉")
-        else: pieces.append("**24-hour Momentum**: No strong short-term momentum. ⚖️ The lack of significant price movement means you might want to hold off on any new investments for now.")
-
-    if pct_7d is not None and not (isinstance(pct_7d, float) and math.isnan(pct_7d)):
-        if pct_7d > 10: pieces.append("**7-day Momentum**: 7-day trend is strongly positive. 📈")
-        elif pct_7d < -10: pieces.append("**7-day Momentum**: 7-day trend is strongly negative. 📉")
-        else: pieces.append("**7-day Momentum**: Mild/moderate trend. 🔄 Over the past week, prices have remained relatively stable. It’s a signal that the market is in a consolidation phase.")
-
-    if not (isinstance(rsi, float) and math.isnan(rsi)):
-        if rsi >= 70: pieces.append("**RSI (14)**: RSI is high → market may be overbought. 📉")
-        elif rsi <= 30: pieces.append("**RSI (14)**: RSI is low → market may be oversold. 📈")
-        else: pieces.append("**RSI (14)**: Neutral range. 🧠 The current market is neither overbought nor oversold, implying a balanced risk. A neutral RSI suggests it's neither a great time to buy nor to sell.")
-
-    insight_text = "\n\n".join(pieces)
-    return {"rating": rating, "score": float(score), "insight": insight_text}
+    # Return the generated recommendation and insight
+    return {"rating": rating, "score": 0.0, "insight": insight_text}
 
 # =================================================================
 # 1) MEMORY DB (exactly your code, unchanged)
@@ -1190,24 +1135,28 @@ def render_pretty_summary(result, horizon_days: int = 7):
     """
     market = result["market"]
     pcts = result.get("sentiment_percentages", {}) or {}
-    rec  = result.get("recommendation", {}) or {}
+    rec = result.get("recommendation", {}) or {}
 
     # --- Unpack market ---
-    name  = f"{market.get('coin','').capitalize()} ({market.get('symbol','').upper()})"
+    name = f"{market.get('coin', '').capitalize()} ({market.get('symbol', '').upper()})"
     price = market.get("price_usd", float("nan"))
-    c24   = market.get("pct_change_24h", float("nan"))
-    c7    = market.get("pct_change_7d", float("nan"))
-    rsi   = market.get("rsi_14", float("nan"))
-    mcap  = market.get("market_cap", float("nan"))
+    c24 = market.get("pct_change_24h", float("nan"))
+    c7 = market.get("pct_change_7d", float("nan"))
+    rsi = market.get("rsi_14", float("nan"))
+    mcap = market.get("market_cap", float("nan"))
     vol24 = market.get("volume_24h", float("nan"))
 
-    # --- Derived ---
-    liq_pct = (vol24 / mcap * 100.0) if (isinstance(mcap,(int,float)) and mcap>0 and isinstance(vol24,(int,float))) else None
-    c24_arrow = "🔺" if (isinstance(c24,(int,float)) and c24 >= 0) else "🔻"
-    c24_color = "#2ecc71" if (isinstance(c24,(int,float)) and c24 >= 0) else "#e74c3c"
+    # Call GPT-3 to generate dynamic recommendation and insights
+    rec_text = gpt3_generate_insight_and_recommendation(
+        sentiment=rec.get("sentiment", 0),
+        pct_24h=c24,
+        pct_7d=c7,
+        rsi=rsi,
+        risk="Medium",  # Set risk or pass as a parameter if needed
+        horizon_days=horizon_days
+    )
 
     # Recommendation cosmetics
-    rec_text  = rec.get("rating","HOLD / WAIT")
     rec_label, rec_emoji, rec_color = _rec_style(rec_text)
 
     # =========================
@@ -1219,7 +1168,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.markdown("**Price**")
         st.markdown(f"<span style='font-size:2rem;font-weight:800'>$ {price:,.2f}</span>", unsafe_allow_html=True)
         st.markdown(
-            f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>" if isinstance(c24,(int,float)) else "—",
+            f"<span style='padding:4px 8px;border-radius:999px;background:{rec_color}22;color:{rec_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>" if isinstance(c24, (int, float)) else "—",
             unsafe_allow_html=True
         )
         # Big recommendation badge
@@ -1233,14 +1182,14 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.metric("Market Cap", _fmt_money(mcap))
         st.metric("24h Volume", _fmt_money(vol24))
     with cols[2]:
-        st.metric("7d Change", f"{c7:.2f}%" if isinstance(c7,(int,float)) else "—")
-        st.metric("RSI (14)", f"{rsi:.1f}" if isinstance(rsi,(int,float)) else "—")
+        st.metric("7d Change", f"{c7:.2f}%" if isinstance(c7, (int, float)) else "—")
+        st.metric("RSI (14)", f"{rsi:.1f}" if isinstance(rsi, (int, float)) else "—")
     with cols[3]:
         st.write("**Quick tags**")
         chips = []
-        if isinstance(c7,(int,float)): chips.append(f"7d: {c7:.2f}%")
-        if isinstance(liq_pct,(int,float)): chips.append(f"Liquidity: {liq_pct:.1f}%")
-        chips.append(f"RSI: {f'{rsi:.1f}' if isinstance(rsi,(int,float)) else '—'} · {_rsi_zone(rsi)}")
+        if isinstance(c7, (int, float)): chips.append(f"7d: {c7:.2f}%")
+        if isinstance(liq_pct, (int, float)): chips.append(f"Liquidity: {liq_pct:.1f}%")
+        chips.append(f"RSI: {f'{rsi:.1f}' if isinstance(rsi, (int, float)) else '—'} · {_rsi_zone(rsi)}")
         chips.append(rec_text)
         st.markdown(
             " ".join([f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:6px 10px;border-radius:999px;margin-right:6px'>{t}</span>" for t in chips]),
@@ -1262,192 +1211,15 @@ def render_pretty_summary(result, horizon_days: int = 7):
             unsafe_allow_html=True
         )
         if isinstance(rec_score, (int, float)):
-            score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))  # map [-1..+1] → [0..100]
+            score100 = max(0, min(100, int(round(50 + 50 * float(rec_score)))))  # map [-1..+1] → [0..100]
             st.progress(score100, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
         else:
             st.caption("Model score unavailable.")
     with colsR[1]:
         insight = rec.get("insight", "")
-        def pick(lbl):
-            for pat in [rf"^\*\*{re.escape(lbl)}\*\*\s*:?\s*(.+)$", rf"^{re.escape(lbl)}\s*:?\s*(.+)$"]:
-                for ln in [l.strip() for l in insight.splitlines() if l.strip()]:
-                    m = re.match(pat, ln, flags=re.I)
-                    if m: return m.group(0)
-            return "—"
-        st.write(f"• {pick('Sentiment')}")
-        st.write(f"• {pick('24-hour Momentum')}")
-        st.write(f"• {pick('7-day Momentum')}")
-        st.write(f"• {pick('RSI (14)')}")
-        # --- NEW: one-line context note when forecast conflicts with RSI ---
-        fc_note = result.get("forecast_note", "")
-        if fc_note:
-            st.caption(fc_note)
+        st.info(insight)
 
     st.divider()
-
-    # =========================
-    # Sentiment / Risks / Momentum
-    # =========================
-    c1, c2, c3 = st.columns([1.1, 1.1, 1])
-    with c1:
-        st.subheader("📰 Sentiment")
-        pos = float(pcts.get("positive", 0.0)); neu = float(pcts.get("neutral", 0.0)); neg = float(pcts.get("negative", 0.0))
-        st.markdown(_sentiment_bar(pos, neu, neg))
-        st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
-        ins = rec.get("insight","").strip() or "—"
-        st.info(ins)
-
-    with c2:
-        st.subheader("⚠️ Risks")
-        risk_lines = []
-        if isinstance(liq_pct,(int,float)):
-            badge = "🔴" if liq_pct < 5 else ("🟠" if liq_pct < 10 else "🟢")
-            risk_lines.append(f"{badge} Liquidity: 24h vol is {liq_pct:.1f}% of market cap.")
-        arts = result.get("articles", []) or []
-        joined = " ".join([a.get("title","") for a in arts])[:3000]
-        if re.search(r"\b(sec|regulat|ban|lawsuit|enforcement|probe|review)\b", joined, re.I):
-            risk_lines.append("🟠 Regulatory: recent headlines mention reviews/enforcement.")
-        ex = result.get("explainability", {}) or {}
-        comps = ex.get("components", {}) or {}
-        ttl  = comps.get("total_score", None)
-        if ttl is not None:
-            score = max(0, min(100, int(round(50 + 50*float(ttl)))))
-            st.progress(score, text=f"Composite Score: {score}/100")
-        st.write("\n\n".join(risk_lines) if risk_lines else "No notable risks detected.")
-
-    with c3:
-        st.subheader("📈 Momentum & RSI")
-        insight = rec.get("insight","")
-        def pick(lbl):
-            for pat in [rf"^\*\*{re.escape(lbl)}\*\*\s*:?\s*(.+)$", rf"^{re.escape(lbl)}\s*:?\s*(.+)$"]:
-                for ln in [l.strip() for l in insight.splitlines() if l.strip()]:
-                    m = re.match(pat, ln, flags=re.I)
-                    if m: return m.group(0)
-            return "—"
-        st.write(f"• {pick('24-hour Momentum')}")
-        st.write(f"• {pick('7-day Momentum')}")
-        st.write(f"• {pick('RSI (14)')}")
-
-    st.divider()
-
-    # =========================
-    # Strategy (What-if)
-    # =========================
-    st.subheader("🧠 Strategy Simulation")
-    pos = float(pcts.get("positive", 0.0)); neg = float(pcts.get("negative", 0.0))
-    sim_score = (pos - neg) / 100.0
-    scenarios = generate_scenarios(
-        sim_score,
-        rsi if isinstance(rsi,(int,float)) else float("nan"),
-        c24 if isinstance(c24,(int,float)) else float("nan"),
-        c7 if isinstance(c7,(int,float)) else float("nan"),
-    )
-    if scenarios:
-        for s in scenarios:
-            st.write(f"👉 {s}")
-    else:
-        st.info("No active strategic signals. Keep monitoring for a break above the short-term channel or RSI drift toward 60+.")
-
-    st.divider()
-
-    # =========================
-    # Forecast (last 6M history + next N-day forecast)
-    # =========================
-    st.subheader(f"🔮 {horizon_days}-Day Forecast")
-
-    hist_df = result.get("history")
-    hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
-    ft = result.get("forecast_table", []) or []
-
-    # Build forecast rows for table
-    rows = []
-    for row in ft[:horizon_days]:
-        d = row.get("date")
-        dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
-        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
-        rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
-
-    if rows:
-        df_forecast = pd.DataFrame(rows).set_index("Date")
-        cL, cR = st.columns([1, 1.3])
-        with cL:
-            st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
-
-        with cR:
-            # Combine 6M history with forecast
-            combined = pd.DataFrame()
-            if not hist_df.empty and "price" in hist_df.columns:
-                combined["History"] = hist_df["price"].tail(180)
-
-            if not df_forecast.empty:
-                try:
-                    forecast_vals = df_forecast["Forecast ($)"].astype(float)
-                    forecast_vals.index = pd.to_datetime(df_forecast.index)
-                    combined = pd.concat([combined, forecast_vals.rename("Forecast")])
-                except Exception:
-                    pass
-
-            if not combined.empty:
-                import altair as alt
-                df_plot = combined.copy()
-
-                # Ensure datetime index is tz-naive
-                try:
-                    df_plot.index = df_plot.index.tz_convert(None)
-                except Exception:
-                    try:
-                        df_plot.index = df_plot.index.tz_localize(None)
-                    except Exception:
-                        pass
-
-                plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
-                plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
-
-                # Colors
-                color_scale = alt.Scale(
-                    domain=["History", "Forecast"],
-                    range=["#4e79a7", "#ff4d4f"]
-                )
-
-                base = alt.Chart(plot_df).encode(
-                    x=alt.X("Date:T", title="Date"),
-                    y=alt.Y("Value:Q", title="Price (USD)"),
-                    color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
-                    tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
-                )
-
-                # line + red dots on forecast
-                lines = base.mark_line(size=2)
-                points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
-
-                # Monte-Carlo IQR band (25–75%) if provided
-                mc_mean = result.get("mc_mean") or []
-                mc_lo   = result.get("mc_lo") or []
-                mc_hi   = result.get("mc_hi") or []
-                chart = (lines + points)
-                try:
-                    if mc_mean and len(mc_mean) == df_forecast.shape[0]:
-                        band_df = pd.DataFrame({
-                            "Date": pd.to_datetime(df_forecast.index),
-                            "lo": mc_lo,
-                            "hi": mc_hi,
-                        })
-                        band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
-                            x=alt.X("Date:T", title="Date"),
-                            y="lo:Q",
-                            y2="hi:Q",
-                        )
-                        chart = chart + band_chart
-                except Exception:
-                    pass
-
-                st.altair_chart(chart.interactive(), use_container_width=True)
-            else:
-                st.caption("_No forecast available._")
-
-    else:
-        st.caption("_No forecast available._")
-
 
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
@@ -1460,50 +1232,30 @@ if not openai.api_key:
 else:
     st.write("OpenAI API key is successfully set.")
 
-# Custom function to handle serialization of non-serializable types
-def custom_json_serializer(obj):
-    if isinstance(obj, np.ndarray):  # If the object is a NumPy array
-        return obj.tolist()  # Convert it to a list
-    elif isinstance(obj, set):  # If it's a set, convert it to a list
-        return list(obj)
-    elif isinstance(obj, pd.DataFrame):  # If it's a pandas DataFrame
-        return obj.to_dict(orient="records")  # Convert it to a dictionary
-    elif isinstance(obj, tf.Tensor):  # If it's a TensorFlow tensor
-        return obj.numpy().tolist()  # Convert Tensor to a list
-    # You can add more conditions here for other types if necessary
-    raise TypeError(f"Type {obj.__class__.__name__} not serializable")
+def gpt3_generate_insight_and_recommendation(sentiment: float, pct_24h: float, pct_7d: float, rsi: float, risk: str, horizon_days: int):
+    prompt = f"""
+    Given the following financial data for a cryptocurrency:
+    Sentiment Score: {sentiment}
+    24h Change: {pct_24h}%
+    7-day Change: {pct_7d}%
+    RSI (14): {rsi}
+    Risk level: {risk}
+    Forecast horizon (days): {horizon_days}
 
-# Updated generate_insight_with_gpt3 function
-def generate_insight_with_gpt3(user_message: str, historical_data: dict) -> str:
+    Please generate a recommendation (Buy/Hold/Sell) and provide insights on the current market conditions. The recommendation should take into account the sentiment, momentum, RSI, and risk level. Also, provide reasoning for the recommendation.
     """
-    Generate actionable insights using GPT-3 based on the user's message and market data.
-    """
-    try:
-        # Serialize the historical data using the custom serializer
-        historical_data_json = json.dumps(historical_data, indent=2, default=custom_json_serializer)
 
-        # Format the input text for GPT-3
-        input_text = f"""
-        User's query: {user_message}
-        Based on the following market data:
-        {historical_data_json}
+    response = openai.Completion.create(
+        engine="text-davinci-003",  # You can use "gpt-3.5-turbo" if preferred
+        prompt=prompt,
+        max_tokens=200,
+        n=1,
+        stop=None,
+        temperature=0.7,
+    )
 
-        What is the recommended action or insight based on this data? Please provide clear recommendations like 'BUY', 'HOLD', 'SELL', or 'WAIT'.
-        """
-        
-        # GPT-3 API call to generate insight
-        response = openai.Completion.create(
-            engine="text-davinci-003",  # Or another GPT model
-            prompt=input_text,
-            max_tokens=200,
-            temperature=0.7,
-        )
-
-        return response.choices[0].text.strip()
-
-    except TypeError as e:
-        # Handle any serialization errors gracefully
-        return f"Error serializing data: {e}"
+    recommendation = response.choices[0].text.strip()
+    return recommendation
 
 def build_single_response(user_message: str, session_id: str):
     """
