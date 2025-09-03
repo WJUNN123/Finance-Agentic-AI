@@ -9,7 +9,7 @@ shap
 pandas
 numpy
 matplotlib
-openai>=1.0.0
+openai==0.28
 transformers
 plotly
 scikit-learn
