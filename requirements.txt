@@ -1,7 +1,7 @@
 streamlit
 feedparser
 prophet
-tensorflow
+tensorflow==2.20.0
 tf-keras
 sentence-transformers
 faiss-cpu
@@ -14,5 +14,4 @@ transformers
 plotly
 scikit-learn
 requests
-torch  # If you're using PyTorch
-tensorflow-addons  # If needed for advanced TensorFlow features
+torch
