@@ -1453,6 +1453,12 @@ def render_pretty_summary(result, horizon_days: int = 7):
 # =================================================================
 openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
 
+# If the key is missing, display an error
+if not openai.api_key:
+    st.error("OpenAI API key is missing. Please add it to Streamlit Secrets or set it as an environment variable.")
+else:
+    st.write("OpenAI API key is successfully set.")
+
 def generate_insight_with_gpt3(user_message: str, historical_data: dict) -> str:
     """
     Generate actionable insights using GPT-3 based on the user's message and market data.
