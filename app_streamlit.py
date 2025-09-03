@@ -506,14 +506,17 @@ def call_gpt3_for_insight(
     temperature: float = 0.3
 ) -> Dict:
     """Call GPT-3 to generate personalized insights and recommendations"""
+    
+    # Check if OpenAI API key is available
     if not OPENAI_API_KEY:
         return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
     
     headlines_context = ""
     if top_headlines:
         headlines_context = f"\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
-    
+
     def safe_format(val, default="N/A", format_str="{:.2f}"):
+        """Helper function to safely format values"""
         if val is None or (isinstance(val, float) and math.isnan(val)):
             return default
         return format_str.format(val)
@@ -563,9 +566,8 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {
-                    "role": "system", 
-                    "content": "You are a professional cryptocurrency analyst. Always include risk disclaimers and remind users this is educational content, not financial advice."
+                {"role": "system", 
+                 "content": "You are a professional cryptocurrency analyst. Always include risk disclaimers and remind users this is educational content, not financial advice."
                 },
                 {"role": "user", "content": prompt}
             ],
