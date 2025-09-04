@@ -523,9 +523,6 @@ def call_gpt3_for_insight(
     if not gemini_api_key:
         st.warning("Gemini API key not found. Falling back to rule-based analysis.")
         return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
-    else:
-        st.write("Gemini API key successfully loaded.")
-        return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
     
     genai.configure(api_key=gemini_api_key)
     
@@ -537,7 +534,7 @@ def call_gpt3_for_insight(
         if val is None or (isinstance(val, float) and math.isnan(val)):
             return default
         return format_str.format(val)
-    
+
     rsi_zone = "N/A"
     if not (isinstance(rsi, float) and math.isnan(rsi)):
         if rsi >= 70:
@@ -546,42 +543,42 @@ def call_gpt3_for_insight(
             rsi_zone = "Oversold"
         else:
             rsi_zone = "Neutral"
-    
+
     prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}) and provide investment insights.
-
-MARKET DATA:
-- Current Price: ${safe_format(price)}
-- Market Cap: ${safe_format(market_cap, format_str="{:,.0f}")}
-- 24h Volume: ${safe_format(volume_24h, format_str="{:,.0f}")}
-- 24h Change: {safe_format(pct_24h)}%
-- 7d Change: {safe_format(pct_7d)}%
-- RSI (14): {safe_format(rsi)} ({rsi_zone})
-
-SENTIMENT ANALYSIS:
-- News Sentiment Score: {sentiment:.3f} (range: -1 to +1, where +1 is very positive)
-
-ANALYSIS PARAMETERS:
-- Risk Tolerance: {risk}
-- Investment Horizon: {horizon_days} days{headlines_context}
-
-{f'FORECAST NOTE: {forecast_note}' if forecast_note else ''}
-
-Please provide:
-1. A clear BUY/SELL/HOLD recommendation with reasoning
-2. Detailed insights covering:
-   - Sentiment analysis interpretation
-   - Technical momentum (24h and 7d trends)
-   - RSI analysis and what it suggests
-   - Risk factors to consider
-   - Key catalysts to watch
-
-Format your response as a structured analysis. Be specific about price levels, timeframes, and actionable advice. Consider the user's risk tolerance and investment horizon.
-
-Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
+    
+    MARKET DATA:
+    - Current Price: ${safe_format(price)}
+    - Market Cap: ${safe_format(market_cap, format_str="{:,.0f}")}
+    - 24h Volume: ${safe_format(volume_24h, format_str="{:,.0f}")}
+    - 24h Change: {safe_format(pct_24h)}%
+    - 7d Change: {safe_format(pct_7d)}%
+    - RSI (14): {safe_format(rsi)} ({rsi_zone})
+    
+    SENTIMENT ANALYSIS:
+    - News Sentiment Score: {sentiment:.3f} (range: -1 to +1, where +1 is very positive)
+    
+    ANALYSIS PARAMETERS:
+    - Risk Tolerance: {risk}
+    - Investment Horizon: {horizon_days} days{headlines_context}
+    
+    {f'FORECAST NOTE: {forecast_note}' if forecast_note else ''}
+    
+    Please provide:
+    1. A clear BUY/SELL/HOLD recommendation with reasoning
+    2. Detailed insights covering:
+       - Sentiment analysis interpretation
+       - Technical momentum (24h and 7d trends)
+       - RSI analysis and what it suggests
+       - Risk factors to consider
+       - Key catalysts to watch
+    
+    Format your response as a structured analysis. Be specific about price levels, timeframes, and actionable advice. Consider the user's risk tolerance and investment horizon.
+    
+    Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
     try:
         # Initialize Gemini model
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini')  # Changed to basic Gemini model
         
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
@@ -597,7 +594,6 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
             generation_config=generation_config
         )
         
-        # Get the response text
         gemini_response = response.text.strip()
 
         # Extract the recommendation and calculate the score
