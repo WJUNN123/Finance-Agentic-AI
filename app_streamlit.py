@@ -588,7 +588,7 @@ def call_gpt3_for_insight(
 
     try:
         # Initialize Gemini model
-        model = genai.GenerativeModel('gemini')  # Changed to basic Gemini model
+        model = genai.GenerativeModel('gemini-pro')  # Changed to basic Gemini model
         
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
