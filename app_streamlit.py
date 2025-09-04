@@ -573,8 +573,8 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
     try:
         # Use GPT-3.5 model via ChatCompletion
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo-mini",  # Switched model
-            messages=[
+            model="gpt-4",  # Change to gpt-4 or another model
+            messages=[ 
                 {"role": "system", "content": "You are a professional cryptocurrency analyst."},
                 {"role": "user", "content": prompt}
             ],
@@ -584,7 +584,6 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
             frequency_penalty=0.1,
             presence_penalty=0.1
         )
-        
         # Get the response text
         gpt_response = response["choices"][0]["message"]["content"].strip()
 
