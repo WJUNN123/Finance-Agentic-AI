@@ -30,7 +30,7 @@ import uuid
 import sqlite3
 import joblib
 import io
-import openai
+import google.generativeai as genai
 
 # UI
 import streamlit as st
@@ -516,9 +516,15 @@ def call_gpt3_for_insight(
     max_tokens: int = 500,
     temperature: float = 0.3
 ) -> Dict:
-    """Call GPT-3 to generate personalized insights and recommendations"""
+    """Call Google Gemini to generate personalized insights and recommendations"""
     
-    openai.api_key = st.secrets["openai"]["api_key"] if "openai" in st.secrets else os.getenv("OPENAI_API_KEY")
+    # Configure Gemini API key
+    gemini_api_key = st.secrets["gemini"]["api_key"] if "gemini" in st.secrets else os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key:
+        st.warning("Gemini API key not found. Falling back to rule-based analysis.")
+        return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
+    
+    genai.configure(api_key=gemini_api_key)
     
     headlines_context = ""
     if top_headlines:
@@ -571,57 +577,45 @@ Format your response as a structured analysis. Be specific about price levels, t
 Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
     try:
-        # Use GPT-3.5 model via ChatCompletion
-        response = openai.ChatCompletion.create(
-            model="o3",  # Use an available model
-            messages=[ 
-                {"role": "system", "content": "You are a professional cryptocurrency analyst."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=max_tokens,
+        # Initialize Gemini model
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # Configure generation parameters
+        generation_config = genai.types.GenerationConfig(
             temperature=temperature,
+            max_output_tokens=max_tokens,
             top_p=0.9,
-            frequency_penalty=0.1,
-            presence_penalty=0.1
+            top_k=40
         )
+        
+        # Generate response
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config
+        )
+        
         # Get the response text
-        gpt_response = response["choices"][0]["message"]["content"].strip()
+        gemini_response = response.text.strip()
 
         # Extract the recommendation and calculate the score
-        rating = extract_recommendation(gpt_response)
-        score = calculate_score_from_response(gpt_response, sentiment, pct_24h, pct_7d, rsi)
+        rating = extract_recommendation(gemini_response)
+        score = calculate_score_from_response(gemini_response, sentiment, pct_24h, pct_7d, rsi)
         
         return {
             "rating": rating,
             "score": score,
-            "insight": gpt_response,
-            "source": "gpt-3.5"
+            "insight": gemini_response,
+            "source": "gemini"
         }
         
     except Exception as e:
-        st.warning(f"GPT-3.5 API error: {e}. Falling back to rule-based analysis.")
+        st.warning(f"Gemini API error: {e}. Falling back to rule-based analysis.")
         fallback_result = recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
         fallback_result["source"] = "fallback"
         return fallback_result
-
-def extract_recommendation(gpt_response: str) -> str:
-    """Extract BUY/SELL/HOLD recommendation from GPT response"""
-    response_lower = gpt_response.lower()
-    
-    if any(phrase in response_lower for phrase in ["strong buy", "buy recommendation", "recommend buying"]):
-        return "BUY"
-    elif any(phrase in response_lower for phrase in ["buy", "accumulate", "long position"]):
-        if "avoid" not in response_lower and "don't" not in response_lower:
-            return "BUY"
-    elif any(phrase in response_lower for phrase in ["sell", "short", "avoid", "exit"]):
-        return "SELL / AVOID"
-    elif any(phrase in response_lower for phrase in ["hold", "wait", "neutral", "sideways"]):
-        return "HOLD / WAIT"
-    
-    return "HOLD / WAIT"
-
+        
 def calculate_score_from_response(gpt_response: str, sentiment: float, pct_24h: float, pct_7d: float, rsi: float) -> float:
-    """Calculate a numerical score based on GPT response and market data"""
+    """Calculate a numerical score based on Gemini response and market data"""
     response_lower = gpt_response.lower()
     
     base_score = 0.0
@@ -661,6 +655,21 @@ def calculate_score_from_response(gpt_response: str, sentiment: float, pct_24h: 
     final_score = base_score + gpt_adjustment
     return max(-1.0, min(1.0, final_score))
 
+def extract_recommendation(gemini_response: str) -> str:
+    """Extract BUY/SELL/HOLD recommendation from Gemini response"""
+    response_lower = gemini_response.lower()
+    
+    if any(phrase in response_lower for phrase in ["strong buy", "buy recommendation", "recommend buying"]):
+        return "BUY"
+    elif any(phrase in response_lower for phrase in ["buy", "accumulate", "long position"]):
+        if "avoid" not in response_lower and "don't" not in response_lower:
+            return "BUY"
+    elif any(phrase in response_lower for phrase in ["sell", "short", "avoid", "exit"]):
+        return "SELL / AVOID"
+    elif any(phrase in response_lower for phrase in ["hold", "wait", "neutral", "sideways"]):
+        return "HOLD / WAIT"
+    
+    return "HOLD / WAIT"
 
 # =================================================================
 # 1) MEMORY DB (exactly your code, unchanged)
@@ -1399,6 +1408,15 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.progress(score100, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
         else:
             st.caption("Model score unavailable.")
+            rec_source = rec.get("source", "unknown")
+            if rec_source == "gemini":
+                st.caption("🤖 Powered by Google Gemini")
+            elif rec_source == "gpt3" or rec_source == "gpt-3.5":
+                st.caption("🤖 Powered by OpenAI GPT")
+            elif rec_source == "fallback":
+                st.caption("⚙️ Rule-based analysis")
+            else:
+                st.caption("🤖 AI-generated insights")
     with colsR[1]:
         insight = rec.get("insight", "")
         def pick(lbl):
