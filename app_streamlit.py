@@ -523,6 +523,9 @@ def call_gpt3_for_insight(
     if not gemini_api_key:
         st.warning("Gemini API key not found. Falling back to rule-based analysis.")
         return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
+    else:
+        st.write("Gemini API key successfully loaded.")
+        return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
     
     genai.configure(api_key=gemini_api_key)
     
