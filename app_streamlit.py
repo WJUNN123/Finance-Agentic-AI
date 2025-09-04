@@ -602,8 +602,8 @@ def call_gpt3_for_insight(
         max_tokens = 4096 - input_tokens  # Adjust to fit within the limit
 
     try:
-        # Initialize the Gemini model (use the correct model name for free-tier users)
-        model = genai.GenerativeModel('gemini-2.5-flash')  # Use the correct model name
+        # Initialize the basic Gemini model (for free-tier users)
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
@@ -624,32 +624,7 @@ def call_gpt3_for_insight(
         # Extract the recommendation and calculate the score
         rating = extract_recommendation(gemini_response)
         score = calculate_score_from_response(gemini_response, sentiment, pct_24h, pct_7d, rsi)
-
-        # Calculate liquidity percentage
-        liq_pct = (volume_24h / market_cap) * 100  # Calculate liquidity percentage
-
-        # Combine Risk and Momentum & RSI into one section
-        c1, c2 = st.columns([1.5, 2])
-
-        # Risk section
-        with c1:
-            st.subheader("⚠️ Risks")
-            risk_lines = []  # Collect risk-related information
-            if isinstance(liq_pct, (int, float)):  # Ensure liq_pct is a valid number
-                badge = "🔴" if liq_pct < 5 else ("🟠" if liq_pct < 10 else "🟢")
-                risk_lines.append(f"{badge} Liquidity: 24h volume is {liq_pct:.1f}% of market cap.")
-            st.write("\n".join(risk_lines) if risk_lines else "No notable risks detected.")
         
-        # Momentum & RSI section
-        with c2:
-            st.subheader("📈 Momentum & RSI")
-            momentum_24 = safe_format(pct_24h)  # Ensure this value is correctly formatted and passed
-            momentum_7 = safe_format(pct_7d)  # Same for 7-day momentum
-            rsi_line = pick("RSI (14)")  # Make sure this is picking the correct data
-            st.write(f"• 24-hour Momentum: {momentum_24}")
-            st.write(f"• 7-day Momentum: {momentum_7}")
-            st.write(f"• RSI (14): {rsi_line}")
-
         return {
             "rating": rating,
             "score": score,
@@ -662,6 +637,7 @@ def call_gpt3_for_insight(
         fallback_result = recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
         fallback_result["source"] = "fallback"
         return fallback_result
+
         
 def calculate_score_from_response(gpt_response: str, sentiment: float, pct_24h: float, pct_7d: float, rsi: float) -> float:
     """Calculate a numerical score based on Gemini response and market data"""
