@@ -499,7 +499,7 @@ def recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days):
         "source": "fallback"
     }
 
-def call_gemini_for_insight(
+def call_gpt3_for_insight(
     coin_id: str,
     coin_symbol: str,
     sentiment: float,
@@ -517,83 +517,88 @@ def call_gemini_for_insight(
     temperature: float = 0.3
 ) -> Dict:
     """Call Google Gemini to generate personalized insights and recommendations"""
-
+    
     # Configure Gemini API key
     gemini_api_key = st.secrets.get("gemini", {}).get("api_key", None)
     if not gemini_api_key:
         gemini_api_key = os.getenv("GEMINI_API_KEY")
-
-    if not gemini_api_key:
+    
+    if gemini_api_key:
+        try:
+            # Successfully retrieved the API key, you can now configure the Gemini model
+            genai.configure(api_key=gemini_api_key)
+            st.write("Google Gemini API key successfully loaded.")
+        except Exception as e:
+            st.warning(f"Error configuring Gemini API: {str(e)}")
+            return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
+    else:
         st.warning("Gemini API key not found. Falling back to rule-based analysis.")
         return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
+    
+    # Prepare headlines context
+    headlines_context = ""
+    if top_headlines:
+        headlines_context = f"\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
+
+    def safe_format(val, default="N/A", format_str="{:.2f}"):
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            return default
+        return format_str.format(val)
+
+    rsi_zone = "N/A"
+    if not (isinstance(rsi, float) and math.isnan(rsi)):
+        if rsi >= 70:
+            rsi_zone = "Overbought"
+        elif rsi <= 30:
+            rsi_zone = "Oversold"
+        else:
+            rsi_zone = "Neutral"
+
+    prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}) and provide investment insights.
+    
+    MARKET DATA:
+    - Current Price: ${safe_format(price)}
+    - Market Cap: ${safe_format(market_cap, format_str="{:,.0f}")}
+    - 24h Volume: ${safe_format(volume_24h, format_str="{:,.0f}")}
+    - 24h Change: {safe_format(pct_24h)}%
+    - 7d Change: {safe_format(pct_7d)}%
+    - RSI (14): {safe_format(rsi)} ({rsi_zone})
+    
+    SENTIMENT ANALYSIS:
+    - News Sentiment Score: {sentiment:.3f} (range: -1 to +1, where +1 is very positive)
+    
+    ANALYSIS PARAMETERS:
+    - Risk Tolerance: {risk}
+    - Investment Horizon: {horizon_days} days{headlines_context}
+    
+    {f'FORECAST NOTE: {forecast_note}' if forecast_note else ''}
+    
+    Please provide:
+    1. A clear BUY/SELL/HOLD recommendation with reasoning
+    2. Detailed insights covering:
+       - Sentiment analysis interpretation
+       - Technical momentum (24h and 7d trends)
+       - RSI analysis and what it suggests
+       - Risk factors to consider
+       - Key catalysts to watch
+    
+    Format your response as a structured analysis. Be specific about price levels, timeframes, and actionable advice. Consider the user's risk tolerance and investment horizon.
+    
+    Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
+
+    # Calculate token usage (input tokens + output tokens)
+    input_tokens = len(prompt.split())  # Approximate token count for the prompt
+    total_tokens = input_tokens + max_tokens
+    
+    # Ensure token limit is not exceeded (4096 tokens for many models)
+    if total_tokens > 4096:
+        st.warning(f"Total token count exceeds the model limit. Adjusting max tokens.")
+        max_tokens = 4096 - input_tokens  # Adjust to fit within the limit
 
     try:
-        genai.configure(api_key=gemini_api_key)
-        st.write("Google Gemini API key successfully loaded.")
-        
-        # Prepare headlines context
-        headlines_context = ""
-        if top_headlines:
-            headlines_context = f"\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
-
-        def safe_format(val, default="N/A", format_str="{:.2f}"):
-            if val is None or (isinstance(val, float) and math.isnan(val)):
-                return default
-            return format_str.format(val)
-
-        rsi_zone = "N/A"
-        if not (isinstance(rsi, float) and math.isnan(rsi)):
-            if rsi >= 70:
-                rsi_zone = "Overbought"
-            elif rsi <= 30:
-                rsi_zone = "Oversold"
-            else:
-                rsi_zone = "Neutral"
-
-        prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}) and provide investment insights.
-        
-        MARKET DATA:
-        - Current Price: ${safe_format(price)}
-        - Market Cap: ${safe_format(market_cap, format_str="{:,.0f}")}
-        - 24h Volume: ${safe_format(volume_24h, format_str="{:,.0f}")}
-        - 24h Change: {safe_format(pct_24h)}%
-        - 7d Change: {safe_format(pct_7d)}%
-        - RSI (14): {safe_format(rsi)} ({rsi_zone})
-        
-        SENTIMENT ANALYSIS:
-        - News Sentiment Score: {sentiment:.3f} (range: -1 to +1, where +1 is very positive)
-        
-        ANALYSIS PARAMETERS:
-        - Risk Tolerance: {risk}
-        - Investment Horizon: {horizon_days} days{headlines_context}
-        
-        {f'FORECAST NOTE: {forecast_note}' if forecast_note else ''}
-        
-        Please provide:
-        1. A clear BUY/SELL/HOLD recommendation with reasoning
-        2. Detailed insights covering:
-            - Sentiment analysis interpretation
-            - Technical momentum (24h and 7d trends)
-            - RSI analysis and what it suggests
-            - Risk factors to consider
-            - Key catalysts to watch
-        
-        Format your response as a structured analysis. Be specific about price levels, timeframes, and actionable advice. Consider the user's risk tolerance and investment horizon.
-        
-        Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
-
-        # Use the correct model name
+        # Initialize the basic Gemini model (for free-tier users)
         model = genai.GenerativeModel('gemini-pro')
         
-        # A more accurate way to get token count
-        input_tokens = model.count_tokens(prompt).total_tokens
-
-        # Ensure token limit is not exceeded
-        total_tokens = input_tokens + max_tokens
-        if total_tokens > 4096: # A common limit for gemini-pro
-            st.warning(f"Total token count exceeds the model limit. Adjusting max tokens.")
-            max_tokens = max(0, 4096 - input_tokens)
-
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
             temperature=temperature,
@@ -602,6 +607,7 @@ def call_gemini_for_insight(
             top_k=40
         )
         
+        # Generate response
         response = model.generate_content(
             prompt,
             generation_config=generation_config
@@ -609,7 +615,7 @@ def call_gemini_for_insight(
         
         gemini_response = response.text.strip()
 
-        # Assuming these functions are defined elsewhere
+        # Extract the recommendation and calculate the score
         rating = extract_recommendation(gemini_response)
         score = calculate_score_from_response(gemini_response, sentiment, pct_24h, pct_7d, rsi)
         
@@ -619,13 +625,12 @@ def call_gemini_for_insight(
             "insight": gemini_response,
             "source": "gemini"
         }
-            
+        
     except Exception as e:
         st.warning(f"Gemini API error: {e}. Falling back to rule-based analysis.")
         fallback_result = recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
         fallback_result["source"] = "fallback"
         return fallback_result
-
         
 def calculate_score_from_response(gpt_response: str, sentiment: float, pct_24h: float, pct_7d: float, rsi: float) -> float:
     """Calculate a numerical score based on Gemini response and market data"""
