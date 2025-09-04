@@ -499,6 +499,12 @@ def recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days):
         "source": "fallback"
     }
 
+import streamlit as st
+import os
+import google.generativeai as genai
+import math
+from typing import List, Dict
+
 def call_gpt3_for_insight(
     coin_id: str,
     coin_symbol: str,
@@ -597,7 +603,7 @@ def call_gpt3_for_insight(
 
     try:
         # Initialize the Gemini model (use the correct model name for free-tier users)
-        model = genai.GenerativeModel('gemini-2.0-flash')  # Use the correct model name
+        model = genai.GenerativeModel('gemini-2.5-flash')  # Use the correct model name
         
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
@@ -618,17 +624,20 @@ def call_gpt3_for_insight(
         # Extract the recommendation and calculate the score
         rating = extract_recommendation(gemini_response)
         score = calculate_score_from_response(gemini_response, sentiment, pct_24h, pct_7d, rsi)
-        
-        # Create Layout with Risk and Momentum & RSI combined
+
+        # Calculate liquidity percentage
+        liq_pct = (volume_24h / market_cap) * 100  # Calculate liquidity percentage
+
+        # Combine Risk and Momentum & RSI into one section
         c1, c2 = st.columns([1.5, 2])
 
         # Risk section
         with c1:
             st.subheader("⚠️ Risks")
             risk_lines = []  # Collect risk-related information
-            if isinstance(liq_pct,(int,float)):  # Example risk calculation
+            if isinstance(liq_pct, (int, float)):  # Ensure liq_pct is a valid number
                 badge = "🔴" if liq_pct < 5 else ("🟠" if liq_pct < 10 else "🟢")
-                risk_lines.append(f"{badge} Liquidity: 24h vol is {liq_pct:.1f}% of market cap.")
+                risk_lines.append(f"{badge} Liquidity: 24h volume is {liq_pct:.1f}% of market cap.")
             st.write("\n".join(risk_lines) if risk_lines else "No notable risks detected.")
         
         # Momentum & RSI section
