@@ -597,7 +597,7 @@ def call_gpt3_for_insight(
 
     try:
         # Initialize the basic Gemini model (for free-tier users)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
