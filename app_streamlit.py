@@ -534,6 +534,15 @@ def call_gpt3_for_insight(
         st.warning("Gemini API key not found. Falling back to rule-based analysis.")
         return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
     
+    # Print the list of available models for debugging
+    try:
+        models = genai.ListModels()  # This will list available models
+        st.write("Available models:")
+        for model in models:
+            st.write(model.name)  # Print the model names
+    except Exception as e:
+        st.warning(f"Error listing models: {str(e)}")
+    
     genai.configure(api_key=gemini_api_key)
     
     headlines_context = ""
@@ -587,8 +596,8 @@ def call_gpt3_for_insight(
     Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
     try:
-        # Initialize Gemini model
-        model = genai.GenerativeModel('gemini-pro')  # Changed to basic Gemini model
+        # Initialize Gemini model (use the correct model name from the list above)
+        model = genai.GenerativeModel('gemini')  # Use the model you find in the list
         
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
