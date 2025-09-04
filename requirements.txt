@@ -15,3 +15,7 @@ plotly
 scikit-learn
 requests
 torch
+google-cloud-ai
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
