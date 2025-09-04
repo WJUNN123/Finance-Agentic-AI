@@ -530,21 +530,12 @@ def call_gpt3_for_insight(
             st.write("Google Gemini API key successfully loaded.")
         except Exception as e:
             st.warning(f"Error configuring Gemini API: {str(e)}")
+            return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
     else:
         st.warning("Gemini API key not found. Falling back to rule-based analysis.")
         return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
     
-    # Print the list of available models for debugging
-    try:
-        models = genai.ListModels()  # This will list available models
-        st.write("Available models:")
-        for model in models:
-            st.write(model.name)  # Print the model names
-    except Exception as e:
-        st.warning(f"Error listing models: {str(e)}")
-    
-    genai.configure(api_key=gemini_api_key)
-    
+    # Prepare headlines context
     headlines_context = ""
     if top_headlines:
         headlines_context = f"\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
@@ -595,9 +586,18 @@ def call_gpt3_for_insight(
     
     Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
+    # Calculate token usage (input tokens + output tokens)
+    input_tokens = len(prompt.split())  # Approximate token count for the prompt
+    total_tokens = input_tokens + max_tokens
+    
+    # Ensure token limit is not exceeded (4096 tokens for many models)
+    if total_tokens > 4096:
+        st.warning(f"Total token count exceeds the model limit. Adjusting max tokens.")
+        max_tokens = 4096 - input_tokens  # Adjust to fit within the limit
+
     try:
-        # Initialize Gemini model (use the correct model name from the list above)
-        model = genai.GenerativeModel('gemini')  # Use the model you find in the list
+        # Initialize the basic Gemini model (for free-tier users)
+        model = genai.GenerativeModel('gemini')  # Use the correct model name
         
         # Configure generation parameters
         generation_config = genai.types.GenerationConfig(
