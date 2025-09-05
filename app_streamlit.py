@@ -1419,15 +1419,14 @@ def render_pretty_summary(result, horizon_days: int = 7):
     st.divider()
 
     # =========================
-    # Main Content Layout: Sentiment (Full Width) + Sidebar Analysis
+    # Recommendation & Insight Section (Full Width with Sidebar)
     # =========================
+    st.subheader("✅ Recommendation & Insight")
+    
     main_col, sidebar_col = st.columns([2.5, 1])
 
     with main_col:
-        # =========================
-        # Recommendation block (Simplified)
-        # =========================
-        st.subheader("✅ Recommendation")
+        # Recommendation badge and score
         rec_score = rec.get("score", None)
         
         st.markdown(
@@ -1449,12 +1448,12 @@ def render_pretty_summary(result, horizon_days: int = 7):
         elif rec_source == "fallback":
             st.caption("⚙️ Rule-based analysis")
 
-        st.divider()
+        st.write("")  # Add some spacing
 
         # =========================  
-        # Sentiment (Full Width)
+        # Sentiment Analysis
         # =========================
-        st.subheader("📰 Sentiment")
+        st.markdown("**📰 Sentiment Analysis**")
         pos = float(pcts.get("positive", 0.0))
         neu = float(pcts.get("neutral", 0.0)) 
         neg = float(pcts.get("negative", 0.0))
