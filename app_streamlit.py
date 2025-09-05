@@ -1353,7 +1353,7 @@ def _rec_style(rating: str):
 def render_pretty_summary(result, horizon_days: int = 7):
     """
     Pretty dashboard renderer for the Summary view.
-    Minimal fix for blank areas only - keeping original structure.
+    Complete version with expanded sentiment and combined analysis layout.
     """
     market = result["market"]
     pcts = result.get("sentiment_percentages", {}) or {}
@@ -1385,10 +1385,11 @@ def render_pretty_summary(result, horizon_days: int = 7):
     with cols[0]:
         st.markdown("**Price**")
         st.markdown(f"<span style='font-size:2rem;font-weight:800'>$ {price:,.2f}</span>", unsafe_allow_html=True)
-        st.markdown(
-            f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>" if isinstance(c24,(int,float)) else "—",
-            unsafe_allow_html=True
-        )
+        if isinstance(c24,(int,float)):
+            st.markdown(
+                f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>",
+                unsafe_allow_html=True
+            )
         # Big recommendation badge
         st.markdown(
             f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;border-radius:12px;"
@@ -1409,15 +1410,16 @@ def render_pretty_summary(result, horizon_days: int = 7):
         if isinstance(liq_pct,(int,float)): chips.append(f"Liquidity: {liq_pct:.1f}%")
         chips.append(f"RSI: {f'{rsi:.1f}' if isinstance(rsi,(int,float)) else '—'} · {_rsi_zone(rsi)}")
         chips.append(rec_text)
-        st.markdown(
-            " ".join([f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:6px 10px;border-radius:999px;margin-right:6px'>{t}</span>" for t in chips]),
-            unsafe_allow_html=True
-        )
+        for chip in chips:
+            st.markdown(
+                f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:4px 8px;border-radius:12px;margin:2px'>{chip}</span>",
+                unsafe_allow_html=True
+            )
 
     st.divider()
 
     # =========================
-    # Recommendation block - FIXED BLANK AREA
+    # Recommendation block
     # =========================
     st.subheader("✅ Recommendation")
     rec_score = rec.get("score", None)
@@ -1430,22 +1432,24 @@ def render_pretty_summary(result, horizon_days: int = 7):
         )
         if isinstance(rec_score, (int, float)):
             score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))
-            st.progress(score100, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
+            st.progress(score100/100.0, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
         else:
             st.caption("Model score unavailable.")
+        
         rec_source = rec.get("source", "unknown")
         if rec_source == "gemini":
             st.caption("🤖 Powered by Google Gemini")
-        elif rec_source == "gpt3" or rec_source == "gpt-3.5":
+        elif rec_source in ["gpt3", "gpt-3.5", "openai"]:
             st.caption("🤖 Powered by OpenAI GPT")
         elif rec_source == "fallback":
             st.caption("⚙️ Rule-based analysis")
         else:
             st.caption("🤖 AI-generated insights")
+            
     with colsR[1]:
         insight = rec.get("insight", "").strip()
         
-        # FIXED: Extract meaningful content from insight or provide fallback
+        # Extract meaningful content from insight or provide fallback
         if insight and len(insight) > 10:
             # Try to extract key bullet points
             lines = [line.strip() for line in insight.split('\n') if line.strip()]
@@ -1470,7 +1474,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
             if isinstance(rsi,(int,float)):
                 st.write(f"• RSI indicator: {rsi:.1f} ({_rsi_zone(rsi)})")
         
-        # --- Forecast context note ---
+        # Forecast context note
         fc_note = result.get("forecast_note", "")
         if fc_note:
             st.caption(fc_note)
@@ -1478,14 +1482,14 @@ def render_pretty_summary(result, horizon_days: int = 7):
     st.divider()
 
     # =========================
-    # Sentiment / Risks / Momentum - FIXED MOMENTUM BLANK AREA
+    # Sentiment (Expanded) + Combined Analysis - NEW LAYOUT
     # =========================
     c1, c2 = st.columns([1.8, 1.2])  # Give more space to sentiment
 
     with c1:
         st.subheader("📰 Sentiment")
         pos = float(pcts.get("positive", 0.0))
-        neu = float(pcts.get("neutral", 0.0))
+        neu = float(pcts.get("neutral", 0.0)) 
         neg = float(pcts.get("negative", 0.0))
         
         st.markdown(_sentiment_bar(pos, neu, neg))
@@ -1497,22 +1501,19 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.info(ins)
         else:
             st.info("Sentiment analysis based on recent news headlines and social media mentions.")
-    
+
     with c2:
-        # Combined: Risks + Momentum & RSI + Strategy
-        st.subheader("⚠️ Analysis Summary")
-        
-        # === RISKS SECTION ===
-        st.write("**Risks:**")
+        # === RISKS SECTION (keep original title) ===
+        st.subheader("⚠️ Risks")
         risk_lines = []
         if isinstance(liq_pct,(int,float)):
             badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
-            risk_lines.append(f"{badge} Liquidity: {liq_pct:.1f}% of market cap")
+            risk_lines.append(f"{badge} Liquidity: 24h vol is {liq_pct:.1f}% of market cap.")
         
         arts = result.get("articles", []) or []
         joined = " ".join([a.get("title","") for a in arts])[:3000]
         if re.search(r"\b(sec|regulat|ban|lawsuit|enforcement|probe|review)\b", joined, re.I):
-            risk_lines.append("🟡 Regulatory mentions in news")
+            risk_lines.append("🟡 Regulatory: recent headlines mention reviews/enforcement.")
         
         ex = result.get("explainability", {}) or {}
         comps = ex.get("components", {}) or {}
@@ -1522,78 +1523,16 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.progress(score/100.0, text=f"Composite Score: {score}/100")
         
         for risk in risk_lines:
-            st.write(f"• {risk}")
+            st.write(risk)
         
         if not risk_lines:
-            st.write("• 🟢 No major risks detected")
+            st.write("🟢 No notable risks detected.")
         
-        st.write("")  # Add some spacing
+        st.write("")  # Add spacing
         
-        # === MOMENTUM & RSI SECTION ===
-        st.write("**Momentum & RSI:**")
-        
-        # 24h momentum
-        if isinstance(c24,(int,float)):
-            if c24 > 2:
-                st.write(f"• 24h: Strong gain (+{c24:.2f}%)")
-            elif c24 > 0:
-                st.write(f"• 24h: Slight gain (+{c24:.2f}%)")
-            elif c24 > -2:
-                st.write(f"• 24h: Sideways ({c24:+.2f}%)")
-            else:
-                st.write(f"• 24h: Declining ({c24:+.2f}%)")
-        else:
-            st.write("• 24h: Data unavailable")
-            
-        # 7d momentum  
-        if isinstance(c7,(int,float)):
-            if c7 > 5:
-                st.write(f"• 7d: Strong trend (+{c7:.2f}%)")
-            elif c7 > 0:
-                st.write(f"• 7d: Weekly gain (+{c7:.2f}%)")
-            elif c7 > -5:
-                st.write(f"• 7d: Consolidation ({c7:+.2f}%)")
-            else:
-                st.write(f"• 7d: Weekly decline ({c7:+.2f}%)")
-        else:
-            st.write("• 7d: Data unavailable")
-            
-        # RSI
-        if isinstance(rsi,(int,float)):
-            zone = _rsi_zone(rsi)
-            st.write(f"• RSI: {rsi:.1f} ({zone})")
-        else:
-            st.write("• RSI: Data unavailable")
-        
-        st.write("")  # Add some spacing
-        
-        # === STRATEGY SECTION ===
-        st.write("**Strategy Signals:**")
-        pos_pct = float(pcts.get("positive", 0.0))
-        neg_pct = float(pcts.get("negative", 0.0))
-        sim_score = (pos_pct - neg_pct) / 100.0
-        
-        scenarios = generate_scenarios(
-            sim_score,
-            rsi if isinstance(rsi,(int,float)) else float("nan"),
-            c24 if isinstance(c24,(int,float)) else float("nan"),
-            c7 if isinstance(c7,(int,float)) else float("nan"),
-        )
-        
-        if scenarios:
-            for scenario in scenarios[:2]:  # Show only first 2 scenarios to save space
-                # Remove emoji and make more compact
-                clean_scenario = scenario.replace("🟡 ", "• ").replace("🟢 ", "• ").replace("📻 ", "• ").replace("⚖️ ", "• ").replace("🔥 ", "• ")
-                st.write(clean_scenario)
-        else:
-            st.write("• Monitor for breakout signals")
-    
-    st.divider()
-
-    with c3:
+        # === MOMENTUM & RSI SECTION (keep original title) ===
         st.subheader("📈 Momentum & RSI")
         
-        # FIXED: Provide actual content instead of trying to extract from insight
         momentum_content = []
         
         # 24h momentum analysis
@@ -1629,24 +1568,27 @@ def render_pretty_summary(result, horizon_days: int = 7):
         else:
             momentum_content.append("• **RSI (14)**: Data unavailable")
             
-        # Display the content
+        # Display the momentum content
         for content in momentum_content:
             st.write(content)
 
     st.divider()
 
     # =========================
-    # Strategy (What-if) - Keep original
+    # Strategy (What-if) - Keep as separate section
     # =========================
     st.subheader("🧠 Strategy Simulation")
-    pos = float(pcts.get("positive", 0.0)); neg = float(pcts.get("negative", 0.0))
-    sim_score = (pos - neg) / 100.0
+    pos_pct = float(pcts.get("positive", 0.0))
+    neg_pct = float(pcts.get("negative", 0.0))
+    sim_score = (pos_pct - neg_pct) / 100.0
+
     scenarios = generate_scenarios(
         sim_score,
         rsi if isinstance(rsi,(int,float)) else float("nan"),
         c24 if isinstance(c24,(int,float)) else float("nan"),
         c7 if isinstance(c7,(int,float)) else float("nan"),
     )
+
     if scenarios:
         for s in scenarios:
             st.write(f"👉 {s}")
@@ -1656,14 +1598,14 @@ def render_pretty_summary(result, horizon_days: int = 7):
     st.divider()
 
     # =========================
-    # Forecast (last 6M history + next N-day forecast) - Keep original  
+    # Forecast - Single instance only
     # =========================
     st.subheader(f"🔮 {horizon_days}-Day Forecast")
 
     hist_df = result.get("history")
     hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
     ft = result.get("forecast_table", []) or []
-    
+
     # Build forecast rows for table
     rows = []
     for row in ft[:horizon_days]:
@@ -1671,19 +1613,19 @@ def render_pretty_summary(result, horizon_days: int = 7):
         dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
         v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
         rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
-    
+
     if rows:
         df_forecast = pd.DataFrame(rows).set_index("Date")
         cL, cR = st.columns([1, 1.3])
         with cL:
             st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
-    
+
         with cR:
             # Combine 6M history with forecast
             combined = pd.DataFrame()
             if not hist_df.empty and "price" in hist_df.columns:
                 combined["History"] = hist_df["price"].tail(180)
-    
+
             if not df_forecast.empty:
                 try:
                     forecast_vals = df_forecast["Forecast ($)"].astype(float)
@@ -1691,11 +1633,11 @@ def render_pretty_summary(result, horizon_days: int = 7):
                     combined = pd.concat([combined, forecast_vals.rename("Forecast")])
                 except Exception:
                     pass
-    
+
             if not combined.empty:
                 import altair as alt
                 df_plot = combined.copy()
-    
+
                 # Ensure datetime index is tz-naive
                 try:
                     df_plot.index = df_plot.index.tz_convert(None)
@@ -1704,27 +1646,27 @@ def render_pretty_summary(result, horizon_days: int = 7):
                         df_plot.index = df_plot.index.tz_localize(None)
                     except Exception:
                         pass
-    
+
                 plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
                 plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
-    
+
                 # Colors
                 color_scale = alt.Scale(
                     domain=["History", "Forecast"],
                     range=["#4e79a7", "#ff4d4f"]
                 )
-    
+
                 base = alt.Chart(plot_df).encode(
                     x=alt.X("Date:T", title="Date"),
                     y=alt.Y("Value:Q", title="Price (USD)"),
                     color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
                     tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
                 )
-    
+
                 # line + red dots on forecast
                 lines = base.mark_line(size=2)
                 points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
-    
+
                 # Monte-Carlo IQR band (25–75%) if provided
                 mc_mean = result.get("mc_mean") or []
                 mc_lo   = result.get("mc_lo") or []
@@ -1745,11 +1687,10 @@ def render_pretty_summary(result, horizon_days: int = 7):
                         chart = chart + band_chart
                 except Exception:
                     pass
-    
+
                 st.altair_chart(chart.interactive(), use_container_width=True)
             else:
                 st.caption("_No forecast available._")
-    
     else:
         st.caption("_No forecast available._")
     
