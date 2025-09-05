@@ -1499,10 +1499,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         
         if not risk_lines:
             st.write("• 🟢 No major risks detected")
-
-        # Add a divider here for spacing
-        st.divider()
-            
+        
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
@@ -1538,9 +1535,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.write(f"• **RSI**: {rsi:.1f} ({zone})")
         else:
             st.write("• **RSI**: Data unavailable")
-
-        # Add a divider here for spacing
-        st.divider()
 
         # === STRATEGY SECTION ===
         st.subheader("🧠 Strategy Signals")
