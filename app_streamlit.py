@@ -1499,7 +1499,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         
         if not risk_lines:
             st.write("• 🟢 No major risks detected")
-        
+
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
@@ -1649,7 +1649,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 st.caption("_No forecast available._")
     else:
         st.caption("_No forecast available._")
-
+        
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
 # =================================================================
