@@ -1426,8 +1426,12 @@ def render_pretty_summary(result, horizon_days: int = 7):
     main_col, sidebar_col = st.columns([2.5, 1])
 
     with main_col:
-        # Recommendation badge and score
+        # Recommendation badge and score - FIXED: Ensure consistency
         rec_score = rec.get("score", None)
+        rec_rating = rec.get("rating", "HOLD / WAIT")  # Get the actual rating from your system
+        
+        # Use the rating from your recommendation system, not from AI insight parsing
+        rec_label, rec_emoji, rec_color = _rec_style(rec_rating)
         
         st.markdown(
             f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
@@ -1461,12 +1465,21 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.markdown(_sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # Display full sentiment insights
+        # FIXED: Display AI insights but ensure recommendation consistency
         ins = rec.get("insight","").strip()
-        if ins:
-            st.info(ins)
+        if ins and len(ins) > 50:
+            # Replace any conflicting recommendation in the AI text with our system's recommendation
+            cleaned_insight = ins
+            
+            # Remove conflicting recommendation statements from AI text
+            import re
+            cleaned_insight = re.sub(r'Recommendation:\s*(BUY|SELL|HOLD)[^\n]*', f'Recommendation: {rec_label}', cleaned_insight, flags=re.IGNORECASE)
+            cleaned_insight = re.sub(r'\d+\.\s*Recommendation:\s*(BUY|SELL|HOLD)[^\n]*', f'1. Recommendation: {rec_label}', cleaned_insight, flags=re.IGNORECASE)
+            
+            # Show the corrected insight
+            st.info(cleaned_insight)
         else:
-            st.info("Sentiment analysis based on recent news headlines and social media mentions.")
+            st.info(f"**System Recommendation: {rec_label}** - Sentiment analysis based on recent news headlines and market data.")
 
     with sidebar_col:
         # =========================
