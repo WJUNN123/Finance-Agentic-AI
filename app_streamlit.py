@@ -1477,6 +1477,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     with sidebar_col:
         # === RISKS SECTION ===
+        st.subheader("⚠️ Risks")
         risk_lines = []
         if isinstance(liq_pct,(int,float)):
             badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
@@ -1499,7 +1500,11 @@ def render_pretty_summary(result, horizon_days: int = 7):
         
         if not risk_lines:
             st.write("• 🟢 No major risks detected")
-        
+
+        # Adding a large amount of vertical space to fully occupy the column
+        for _ in range(15):
+            st.write("")
+            
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
@@ -1535,6 +1540,10 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.write(f"• **RSI**: {rsi:.1f} ({zone})")
         else:
             st.write("• **RSI**: Data unavailable")
+
+        # Adding a large amount of vertical space to fully occupy the column
+        for _ in range(15):
+            st.write("")
 
         # === STRATEGY SECTION ===
         st.subheader("🧠 Strategy Signals")
