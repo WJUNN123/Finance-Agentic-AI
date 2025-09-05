@@ -1499,7 +1499,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         
         if not risk_lines:
             st.write("• 🟢 No major risks detected")
-
+        
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
