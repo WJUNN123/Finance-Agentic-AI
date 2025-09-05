@@ -1477,7 +1477,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     with sidebar_col:
         # === RISKS SECTION ===
-        st.subheader("⚠️ Risks")
         risk_lines = []
         if isinstance(liq_pct,(int,float)):
             badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
