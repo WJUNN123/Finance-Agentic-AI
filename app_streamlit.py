@@ -533,7 +533,6 @@ def call_gpt3_for_insight(
         try:
             # Successfully retrieved the API key, you can now configure the Gemini model
             genai.configure(api_key=gemini_api_key)
-            st.write("Google Gemini API key successfully loaded.")
         except Exception as e:
             st.warning(f"Error configuring Gemini API: {str(e)}")
             return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
