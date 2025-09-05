@@ -1421,22 +1421,18 @@ def render_pretty_summary(result, horizon_days: int = 7):
     # =========================
     # Recommendation & Insight Section (Full Width with Sidebar)
     # =========================
-    # NEW: Create a columns for the headers to align them
     header_col1, header_col2 = st.columns([2.5, 1])
     with header_col1:
         st.subheader("✅ Recommendation & Insight")
     with header_col2:
         st.subheader("⚠️ Risks")
 
-    # Now create columns for the content below the headers
     main_col, sidebar_col = st.columns([2.5, 1])
 
     with main_col:
-        # Recommendation badge and score - FIXED: Ensure consistency
         rec_score = rec.get("score", None)
-        rec_rating = rec.get("rating", "HOLD / WAIT")  # Get the actual rating from your system
+        rec_rating = rec.get("rating", "HOLD / WAIT")
         
-        # Use the rating from your recommendation system, not from AI insight parsing
         rec_label, rec_emoji, rec_color = _rec_style(rec_rating)
         
         st.markdown(
@@ -1458,11 +1454,8 @@ def render_pretty_summary(result, horizon_days: int = 7):
         elif rec_source == "fallback":
             st.caption("⚙️ Rule-based analysis")
 
-        st.write("")  # Add some spacing
+        st.write("")
 
-        # =========================  
-        # Sentiment Analysis
-        # =========================
         st.markdown("**📰 Sentiment Analysis**")
         pos = float(pcts.get("positive", 0.0))
         neu = float(pcts.get("neutral", 0.0)) 
@@ -1471,29 +1464,19 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.markdown(_sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # FIXED: Display AI insights but ensure recommendation consistency
         ins = rec.get("insight","").strip()
         if ins and len(ins) > 50:
-            # Replace any conflicting recommendation in the AI text with our system's recommendation
-            cleaned_insight = ins
-            
-            # Remove conflicting recommendation statements from AI text
             import re
+            cleaned_insight = ins
             cleaned_insight = re.sub(r'Recommendation:\s*(BUY|SELL|HOLD)[^\n]*', f'Recommendation: {rec_label}', cleaned_insight, flags=re.IGNORECASE)
             cleaned_insight = re.sub(r'\d+\.\s*Recommendation:\s*(BUY|SELL|HOLD)[^\n]*', f'1. Recommendation: {rec_label}', cleaned_insight, flags=re.IGNORECASE)
             
-            # Show the corrected insight
             st.info(cleaned_insight)
         else:
             st.info(f"**System Recommendation: {rec_label}** - Sentiment analysis based on recent news headlines and market data.")
 
     with sidebar_col:
-        # =========================
-        # Sidebar: Combined Analysis
-        # =========================
-        
         # === RISKS SECTION ===
-        # The user wanted the title to be on the same line as "Recommendation & Insight", so it's moved
         risk_lines = []
         if isinstance(liq_pct,(int,float)):
             badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
@@ -1517,8 +1500,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
         if not risk_lines:
             st.write("• 🟢 No major risks detected")
         
-        st.write("") # Add space between sections
-
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
@@ -1555,8 +1536,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
         else:
             st.write("• **RSI**: Data unavailable")
 
-        st.write("") # Add space between sections
-
         # === STRATEGY SECTION ===
         st.subheader("🧠 Strategy Signals")
         pos_pct = float(pcts.get("positive", 0.0))
@@ -1571,8 +1550,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         )
 
         if scenarios:
-            for scenario in scenarios[:3]:  # Limit to 3 scenarios for sidebar
-                # Clean up scenario text for sidebar
+            for scenario in scenarios[:3]:
                 clean_scenario = scenario.replace("🟡 ", "").replace("🟢 ", "").replace("📻 ", "").replace("⚖️ ", "").replace("🔥 ", "")
                 st.write(f"• {clean_scenario}")
         else:
@@ -1604,7 +1582,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
 
         with cR:
-            # Combine 6M history with forecast
             combined = pd.DataFrame()
             if not hist_df.empty and "price" in hist_df.columns:
                 combined["History"] = hist_df["price"].tail(180)
@@ -1621,7 +1598,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 import altair as alt
                 df_plot = combined.copy()
 
-                # Ensure datetime index is tz-naive
                 try:
                     df_plot.index = df_plot.index.tz_convert(None)
                 except Exception:
@@ -1633,7 +1609,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
                 plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
 
-                # Colors
                 color_scale = alt.Scale(
                     domain=["History", "Forecast"],
                     range=["#4e79a7", "#ff4d4f"]
@@ -1646,11 +1621,9 @@ def render_pretty_summary(result, horizon_days: int = 7):
                     tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
                 )
 
-                # line + red dots on forecast
                 lines = base.mark_line(size=2)
                 points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
 
-                # Monte-Carlo IQR band (25–75%) if provided
                 mc_mean = result.get("mc_mean") or []
                 mc_lo   = result.get("mc_lo") or []
                 mc_hi   = result.get("mc_hi") or []
@@ -1676,7 +1649,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 st.caption("_No forecast available._")
     else:
         st.caption("_No forecast available._")
-
 
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
