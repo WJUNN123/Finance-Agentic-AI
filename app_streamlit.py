@@ -1577,99 +1577,99 @@ def render_pretty_summary(result, horizon_days: int = 7):
     # =========================
     st.subheader(f"🔮 {horizon_days}-Day Forecast")
 
-hist_df = result.get("history")
-hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
-ft = result.get("forecast_table", []) or []
-
-# Build forecast rows for table
-rows = []
-for row in ft[:horizon_days]:
-    d = row.get("date")
-    dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
-    v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
-    rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
-
-if rows:
-    df_forecast = pd.DataFrame(rows).set_index("Date")
-    cL, cR = st.columns([1, 1.3])
-    with cL:
-        st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
-
-    with cR:
-        # Combine 6M history with forecast
-        combined = pd.DataFrame()
-        if not hist_df.empty and "price" in hist_df.columns:
-            combined["History"] = hist_df["price"].tail(180)
-
-        if not df_forecast.empty:
-            try:
-                forecast_vals = df_forecast["Forecast ($)"].astype(float)
-                forecast_vals.index = pd.to_datetime(df_forecast.index)
-                combined = pd.concat([combined, forecast_vals.rename("Forecast")])
-            except Exception:
-                pass
-
-        if not combined.empty:
-            import altair as alt
-            df_plot = combined.copy()
-
-            # Ensure datetime index is tz-naive
-            try:
-                df_plot.index = df_plot.index.tz_convert(None)
-            except Exception:
+    hist_df = result.get("history")
+    hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
+    ft = result.get("forecast_table", []) or []
+    
+    # Build forecast rows for table
+    rows = []
+    for row in ft[:horizon_days]:
+        d = row.get("date")
+        dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
+        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
+        rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
+    
+    if rows:
+        df_forecast = pd.DataFrame(rows).set_index("Date")
+        cL, cR = st.columns([1, 1.3])
+        with cL:
+            st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
+    
+        with cR:
+            # Combine 6M history with forecast
+            combined = pd.DataFrame()
+            if not hist_df.empty and "price" in hist_df.columns:
+                combined["History"] = hist_df["price"].tail(180)
+    
+            if not df_forecast.empty:
                 try:
-                    df_plot.index = df_plot.index.tz_localize(None)
+                    forecast_vals = df_forecast["Forecast ($)"].astype(float)
+                    forecast_vals.index = pd.to_datetime(df_forecast.index)
+                    combined = pd.concat([combined, forecast_vals.rename("Forecast")])
                 except Exception:
                     pass
-
-            plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
-            plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
-
-            # Colors
-            color_scale = alt.Scale(
-                domain=["History", "Forecast"],
-                range=["#4e79a7", "#ff4d4f"]
-            )
-
-            base = alt.Chart(plot_df).encode(
-                x=alt.X("Date:T", title="Date"),
-                y=alt.Y("Value:Q", title="Price (USD)"),
-                color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
-                tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
-            )
-
-            # line + red dots on forecast
-            lines = base.mark_line(size=2)
-            points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
-
-            # Monte-Carlo IQR band (25–75%) if provided
-            mc_mean = result.get("mc_mean") or []
-            mc_lo   = result.get("mc_lo") or []
-            mc_hi   = result.get("mc_hi") or []
-            chart = (lines + points)
-            try:
-                if mc_mean and len(mc_mean) == df_forecast.shape[0]:
-                    band_df = pd.DataFrame({
-                        "Date": pd.to_datetime(df_forecast.index),
-                        "lo": mc_lo,
-                        "hi": mc_hi,
-                    })
-                    band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
-                        x=alt.X("Date:T", title="Date"),
-                        y="lo:Q",
-                        y2="hi:Q",
-                    )
-                    chart = chart + band_chart
-            except Exception:
-                pass
-
-            st.altair_chart(chart.interactive(), use_container_width=True)
-        else:
-            st.caption("_No forecast available._")
-
-else:
-    st.caption("_No forecast available._")
-
+    
+            if not combined.empty:
+                import altair as alt
+                df_plot = combined.copy()
+    
+                # Ensure datetime index is tz-naive
+                try:
+                    df_plot.index = df_plot.index.tz_convert(None)
+                except Exception:
+                    try:
+                        df_plot.index = df_plot.index.tz_localize(None)
+                    except Exception:
+                        pass
+    
+                plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
+                plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
+    
+                # Colors
+                color_scale = alt.Scale(
+                    domain=["History", "Forecast"],
+                    range=["#4e79a7", "#ff4d4f"]
+                )
+    
+                base = alt.Chart(plot_df).encode(
+                    x=alt.X("Date:T", title="Date"),
+                    y=alt.Y("Value:Q", title="Price (USD)"),
+                    color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
+                    tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
+                )
+    
+                # line + red dots on forecast
+                lines = base.mark_line(size=2)
+                points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
+    
+                # Monte-Carlo IQR band (25–75%) if provided
+                mc_mean = result.get("mc_mean") or []
+                mc_lo   = result.get("mc_lo") or []
+                mc_hi   = result.get("mc_hi") or []
+                chart = (lines + points)
+                try:
+                    if mc_mean and len(mc_mean) == df_forecast.shape[0]:
+                        band_df = pd.DataFrame({
+                            "Date": pd.to_datetime(df_forecast.index),
+                            "lo": mc_lo,
+                            "hi": mc_hi,
+                        })
+                        band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
+                            x=alt.X("Date:T", title="Date"),
+                            y="lo:Q",
+                            y2="hi:Q",
+                        )
+                        chart = chart + band_chart
+                except Exception:
+                    pass
+    
+                st.altair_chart(chart.interactive(), use_container_width=True)
+            else:
+                st.caption("_No forecast available._")
+    
+    else:
+        st.caption("_No forecast available._")
+    
 
 
 # =================================================================
