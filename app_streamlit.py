@@ -1421,8 +1421,14 @@ def render_pretty_summary(result, horizon_days: int = 7):
     # =========================
     # Recommendation & Insight Section (Full Width with Sidebar)
     # =========================
-    st.subheader("✅ Recommendation & Insight")
-    
+    # NEW: Create a columns for the headers to align them
+    header_col1, header_col2 = st.columns([2.5, 1])
+    with header_col1:
+        st.subheader("✅ Recommendation & Insight")
+    with header_col2:
+        st.subheader("⚠️ Risks")
+
+    # Now create columns for the content below the headers
     main_col, sidebar_col = st.columns([2.5, 1])
 
     with main_col:
@@ -1487,7 +1493,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
         # =========================
         
         # === RISKS SECTION ===
-        st.subheader("⚠️ Risks")
+        # The user wanted the title to be on the same line as "Recommendation & Insight", so it's moved
         risk_lines = []
         if isinstance(liq_pct,(int,float)):
             badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
@@ -1511,6 +1517,8 @@ def render_pretty_summary(result, horizon_days: int = 7):
         if not risk_lines:
             st.write("• 🟢 No major risks detected")
         
+        st.write("") # Add space between sections
+
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
@@ -1546,6 +1554,8 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.write(f"• **RSI**: {rsi:.1f} ({zone})")
         else:
             st.write("• **RSI**: Data unavailable")
+
+        st.write("") # Add space between sections
 
         # === STRATEGY SECTION ===
         st.subheader("🧠 Strategy Signals")
@@ -1666,7 +1676,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
                 st.caption("_No forecast available._")
     else:
         st.caption("_No forecast available._")
-    
 
 
 # =================================================================
