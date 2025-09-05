@@ -1419,22 +1419,27 @@ def render_pretty_summary(result, horizon_days: int = 7):
     st.divider()
 
     # =========================
-    # Recommendation block
+    # Main Content Layout: Sentiment (Full Width) + Sidebar Analysis
     # =========================
-    st.subheader("✅ Recommendation")
-    rec_score = rec.get("score", None)
-    colsR = st.columns([1.2, 2.2])
-    with colsR[0]:
+    main_col, sidebar_col = st.columns([2.5, 1])
+
+    with main_col:
+        # =========================
+        # Recommendation block (Simplified)
+        # =========================
+        st.subheader("✅ Recommendation")
+        rec_score = rec.get("score", None)
+        
         st.markdown(
-            f"<span style='display:inline-block;padding:6px 12px;border-radius:12px;"
-            f"background:{rec_color}22;color:{rec_color};font-weight:800'>{rec_emoji} {rec_label}</span>",
+            f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
+            f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>"
+            f"{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
+        
         if isinstance(rec_score, (int, float)):
             score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))
             st.progress(score100/100.0, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
-        else:
-            st.caption("Model score unavailable.")
         
         rec_source = rec.get("source", "unknown")
         if rec_source == "gemini":
@@ -1443,50 +1448,12 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.caption("🤖 Powered by OpenAI GPT")
         elif rec_source == "fallback":
             st.caption("⚙️ Rule-based analysis")
-        else:
-            st.caption("🤖 AI-generated insights")
-            
-    with colsR[1]:
-        insight = rec.get("insight", "").strip()
-        
-        # Extract meaningful content from insight or provide fallback
-        if insight and len(insight) > 10:
-            # Try to extract key bullet points
-            lines = [line.strip() for line in insight.split('\n') if line.strip()]
-            displayed_content = []
-            
-            for line in lines[:4]:  # Show up to 4 lines
-                if line and not line.startswith('#'):
-                    displayed_content.append(line)
-            
-            if displayed_content:
-                for content in displayed_content:
-                    st.write(f"• {content}")
-            else:
-                # Fallback: show first part of insight
-                st.write(insight[:300] + "..." if len(insight) > 300 else insight)
-        else:
-            # Fallback content when insight is empty
-            st.write(f"• Recommendation: {rec_label}")
-            st.write(f"• Current price: ${price:,.2f}")
-            if isinstance(c24,(int,float)):
-                st.write(f"• 24h change: {c24:+.2f}%")
-            if isinstance(rsi,(int,float)):
-                st.write(f"• RSI indicator: {rsi:.1f} ({_rsi_zone(rsi)})")
-        
-        # Forecast context note
-        fc_note = result.get("forecast_note", "")
-        if fc_note:
-            st.caption(fc_note)
 
-    st.divider()
+        st.divider()
 
-    # =========================
-    # Sentiment (Expanded) + Combined Analysis - NEW LAYOUT
-    # =========================
-    c1, c2 = st.columns([1.8, 1.2])  # Give more space to sentiment
-
-    with c1:
+        # =========================  
+        # Sentiment (Full Width)
+        # =========================
         st.subheader("📰 Sentiment")
         pos = float(pcts.get("positive", 0.0))
         neu = float(pcts.get("neutral", 0.0)) 
@@ -1495,25 +1462,29 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.markdown(_sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # Expanded insight display
+        # Display full sentiment insights
         ins = rec.get("insight","").strip()
         if ins:
             st.info(ins)
         else:
             st.info("Sentiment analysis based on recent news headlines and social media mentions.")
 
-    with c2:
-        # === RISKS SECTION (keep original title) ===
+    with sidebar_col:
+        # =========================
+        # Sidebar: Combined Analysis
+        # =========================
+        
+        # === RISKS SECTION ===
         st.subheader("⚠️ Risks")
         risk_lines = []
         if isinstance(liq_pct,(int,float)):
             badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
-            risk_lines.append(f"{badge} Liquidity: 24h vol is {liq_pct:.1f}% of market cap.")
+            risk_lines.append(f"{badge} Liquidity: {liq_pct:.1f}% of market cap")
         
         arts = result.get("articles", []) or []
         joined = " ".join([a.get("title","") for a in arts])[:3000]
         if re.search(r"\b(sec|regulat|ban|lawsuit|enforcement|probe|review)\b", joined, re.I):
-            risk_lines.append("🟡 Regulatory: recent headlines mention reviews/enforcement.")
+            risk_lines.append("🟡 Regulatory mentions")
         
         ex = result.get("explainability", {}) or {}
         comps = ex.get("components", {}) or {}
@@ -1523,77 +1494,67 @@ def render_pretty_summary(result, horizon_days: int = 7):
             st.progress(score/100.0, text=f"Composite Score: {score}/100")
         
         for risk in risk_lines:
-            st.write(risk)
+            st.write(f"• {risk}")
         
         if not risk_lines:
-            st.write("🟢 No notable risks detected.")
+            st.write("• 🟢 No major risks detected")
         
-        st.write("")  # Add spacing
-        
-        # === MOMENTUM & RSI SECTION (keep original title) ===
+        # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
-        momentum_content = []
-        
-        # 24h momentum analysis
+        # 24h momentum
         if isinstance(c24,(int,float)):
             if c24 > 2:
-                momentum_content.append("• **24h Momentum**: Strong positive (+{:.2f}%)".format(c24))
+                st.write(f"• **24h**: +{c24:.2f}% (Strong)")
             elif c24 > 0:
-                momentum_content.append("• **24h Momentum**: Slight gain (+{:.2f}%)".format(c24))
+                st.write(f"• **24h**: +{c24:.2f}% (Slight gain)")
             elif c24 > -2:
-                momentum_content.append("• **24h Momentum**: Sideways ({:+.2f}%)".format(c24))
+                st.write(f"• **24h**: {c24:+.2f}% (Sideways)")
             else:
-                momentum_content.append("• **24h Momentum**: Declining ({:+.2f}%)".format(c24))
+                st.write(f"• **24h**: {c24:+.2f}% (Declining)")
         else:
-            momentum_content.append("• **24h Momentum**: Data unavailable")
+            st.write("• **24h**: Data unavailable")
             
-        # 7d momentum analysis  
+        # 7d momentum  
         if isinstance(c7,(int,float)):
             if c7 > 5:
-                momentum_content.append("• **7d Momentum**: Strong weekly trend (+{:.2f}%)".format(c7))
+                st.write(f"• **7d**: +{c7:.2f}% (Strong trend)")
             elif c7 > 0:
-                momentum_content.append("• **7d Momentum**: Weekly gain (+{:.2f}%)".format(c7))
+                st.write(f"• **7d**: +{c7:.2f}% (Weekly gain)")
             elif c7 > -5:
-                momentum_content.append("• **7d Momentum**: Consolidation ({:+.2f}%)".format(c7))
+                st.write(f"• **7d**: {c7:+.2f}% (Consolidation)")
             else:
-                momentum_content.append("• **7d Momentum**: Weekly decline ({:+.2f}%)".format(c7))
+                st.write(f"• **7d**: {c7:+.2f}% (Decline)")
         else:
-            momentum_content.append("• **7d Momentum**: Data unavailable")
+            st.write("• **7d**: Data unavailable")
             
-        # RSI analysis
+        # RSI
         if isinstance(rsi,(int,float)):
             zone = _rsi_zone(rsi)
-            momentum_content.append("• **RSI (14)**: {:.1f} - {}".format(rsi, zone))
+            st.write(f"• **RSI**: {rsi:.1f} ({zone})")
         else:
-            momentum_content.append("• **RSI (14)**: Data unavailable")
-            
-        # Display the momentum content
-        for content in momentum_content:
-            st.write(content)
+            st.write("• **RSI**: Data unavailable")
 
-    st.divider()
+        # === STRATEGY SECTION ===
+        st.subheader("🧠 Strategy Signals")
+        pos_pct = float(pcts.get("positive", 0.0))
+        neg_pct = float(pcts.get("negative", 0.0))
+        sim_score = (pos_pct - neg_pct) / 100.0
 
-    # =========================
-    # Strategy (What-if) - Keep as separate section
-    # =========================
-    st.subheader("🧠 Strategy Simulation")
-    pos_pct = float(pcts.get("positive", 0.0))
-    neg_pct = float(pcts.get("negative", 0.0))
-    sim_score = (pos_pct - neg_pct) / 100.0
+        scenarios = generate_scenarios(
+            sim_score,
+            rsi if isinstance(rsi,(int,float)) else float("nan"),
+            c24 if isinstance(c24,(int,float)) else float("nan"),
+            c7 if isinstance(c7,(int,float)) else float("nan"),
+        )
 
-    scenarios = generate_scenarios(
-        sim_score,
-        rsi if isinstance(rsi,(int,float)) else float("nan"),
-        c24 if isinstance(c24,(int,float)) else float("nan"),
-        c7 if isinstance(c7,(int,float)) else float("nan"),
-    )
-
-    if scenarios:
-        for s in scenarios:
-            st.write(f"👉 {s}")
-    else:
-        st.info("No active strategic signals. Keep monitoring for a break above the short-term channel or RSI drift toward 60+.")
+        if scenarios:
+            for scenario in scenarios[:3]:  # Limit to 3 scenarios for sidebar
+                # Clean up scenario text for sidebar
+                clean_scenario = scenario.replace("🟡 ", "").replace("🟢 ", "").replace("📻 ", "").replace("⚖️ ", "").replace("🔥 ", "")
+                st.write(f"• {clean_scenario}")
+        else:
+            st.write("• Monitor for breakout signals")
 
     st.divider()
 
