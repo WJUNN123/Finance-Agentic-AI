@@ -1480,32 +1480,115 @@ def render_pretty_summary(result, horizon_days: int = 7):
     # =========================
     # Sentiment / Risks / Momentum - FIXED MOMENTUM BLANK AREA
     # =========================
-    c1, c2, c3 = st.columns([1.1, 1.1, 1])
+    c1, c2 = st.columns([1.8, 1.2])  # Give more space to sentiment
+
     with c1:
         st.subheader("📰 Sentiment")
-        pos = float(pcts.get("positive", 0.0)); neu = float(pcts.get("neutral", 0.0)); neg = float(pcts.get("negative", 0.0))
+        pos = float(pcts.get("positive", 0.0))
+        neu = float(pcts.get("neutral", 0.0))
+        neg = float(pcts.get("negative", 0.0))
+        
         st.markdown(_sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
-        ins = rec.get("insight","").strip() or "—"
-        st.info(ins)
-
+        
+        # Expanded insight display
+        ins = rec.get("insight","").strip()
+        if ins:
+            st.info(ins)
+        else:
+            st.info("Sentiment analysis based on recent news headlines and social media mentions.")
+    
     with c2:
-        st.subheader("⚠️ Risks")
+        # Combined: Risks + Momentum & RSI + Strategy
+        st.subheader("⚠️ Analysis Summary")
+        
+        # === RISKS SECTION ===
+        st.write("**Risks:**")
         risk_lines = []
         if isinstance(liq_pct,(int,float)):
             badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
-            risk_lines.append(f"{badge} Liquidity: 24h vol is {liq_pct:.1f}% of market cap.")
+            risk_lines.append(f"{badge} Liquidity: {liq_pct:.1f}% of market cap")
+        
         arts = result.get("articles", []) or []
         joined = " ".join([a.get("title","") for a in arts])[:3000]
         if re.search(r"\b(sec|regulat|ban|lawsuit|enforcement|probe|review)\b", joined, re.I):
-            risk_lines.append("🟡 Regulatory: recent headlines mention reviews/enforcement.")
+            risk_lines.append("🟡 Regulatory mentions in news")
+        
         ex = result.get("explainability", {}) or {}
         comps = ex.get("components", {}) or {}
-        ttl  = comps.get("total_score", None)
+        ttl = comps.get("total_score", None)
         if ttl is not None:
             score = max(0, min(100, int(round(50 + 50*float(ttl)))))
-            st.progress(score, text=f"Composite Score: {score}/100")
-        st.write("\n\n".join(risk_lines) if risk_lines else "No notable risks detected.")
+            st.progress(score/100.0, text=f"Composite Score: {score}/100")
+        
+        for risk in risk_lines:
+            st.write(f"• {risk}")
+        
+        if not risk_lines:
+            st.write("• 🟢 No major risks detected")
+        
+        st.write("")  # Add some spacing
+        
+        # === MOMENTUM & RSI SECTION ===
+        st.write("**Momentum & RSI:**")
+        
+        # 24h momentum
+        if isinstance(c24,(int,float)):
+            if c24 > 2:
+                st.write(f"• 24h: Strong gain (+{c24:.2f}%)")
+            elif c24 > 0:
+                st.write(f"• 24h: Slight gain (+{c24:.2f}%)")
+            elif c24 > -2:
+                st.write(f"• 24h: Sideways ({c24:+.2f}%)")
+            else:
+                st.write(f"• 24h: Declining ({c24:+.2f}%)")
+        else:
+            st.write("• 24h: Data unavailable")
+            
+        # 7d momentum  
+        if isinstance(c7,(int,float)):
+            if c7 > 5:
+                st.write(f"• 7d: Strong trend (+{c7:.2f}%)")
+            elif c7 > 0:
+                st.write(f"• 7d: Weekly gain (+{c7:.2f}%)")
+            elif c7 > -5:
+                st.write(f"• 7d: Consolidation ({c7:+.2f}%)")
+            else:
+                st.write(f"• 7d: Weekly decline ({c7:+.2f}%)")
+        else:
+            st.write("• 7d: Data unavailable")
+            
+        # RSI
+        if isinstance(rsi,(int,float)):
+            zone = _rsi_zone(rsi)
+            st.write(f"• RSI: {rsi:.1f} ({zone})")
+        else:
+            st.write("• RSI: Data unavailable")
+        
+        st.write("")  # Add some spacing
+        
+        # === STRATEGY SECTION ===
+        st.write("**Strategy Signals:**")
+        pos_pct = float(pcts.get("positive", 0.0))
+        neg_pct = float(pcts.get("negative", 0.0))
+        sim_score = (pos_pct - neg_pct) / 100.0
+        
+        scenarios = generate_scenarios(
+            sim_score,
+            rsi if isinstance(rsi,(int,float)) else float("nan"),
+            c24 if isinstance(c24,(int,float)) else float("nan"),
+            c7 if isinstance(c7,(int,float)) else float("nan"),
+        )
+        
+        if scenarios:
+            for scenario in scenarios[:2]:  # Show only first 2 scenarios to save space
+                # Remove emoji and make more compact
+                clean_scenario = scenario.replace("🟡 ", "• ").replace("🟢 ", "• ").replace("📻 ", "• ").replace("⚖️ ", "• ").replace("🔥 ", "• ")
+                st.write(clean_scenario)
+        else:
+            st.write("• Monitor for breakout signals")
+    
+    st.divider()
 
     with c3:
         st.subheader("📈 Momentum & RSI")
