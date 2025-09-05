@@ -1350,7 +1350,7 @@ def _rec_style(rating: str):
         return ("SELL / AVOID", "🔴", "#ef4444")
     return ("HOLD / WAIT", "🟡", "#f59e0b")
     
-ef render_pretty_summary(result, horizon_days: int = 7):
+def render_pretty_summary(result, horizon_days: int = 7):
     """
     Pretty dashboard renderer for the Summary view.
     Minimal fix for blank areas only - keeping original structure.
