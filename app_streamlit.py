@@ -1350,10 +1350,10 @@ def _rec_style(rating: str):
         return ("SELL / AVOID", "🔴", "#ef4444")
     return ("HOLD / WAIT", "🟡", "#f59e0b")
     
-def render_pretty_summary(result, horizon_days: int = 7):
+ef render_pretty_summary(result, horizon_days: int = 7):
     """
     Pretty dashboard renderer for the Summary view.
-    Fixed version to handle blank areas in the UI.
+    Minimal fix for blank areas only - keeping original structure.
     """
     market = result["market"]
     pcts = result.get("sentiment_percentages", {}) or {}
@@ -1385,11 +1385,10 @@ def render_pretty_summary(result, horizon_days: int = 7):
     with cols[0]:
         st.markdown("**Price**")
         st.markdown(f"<span style='font-size:2rem;font-weight:800'>$ {price:,.2f}</span>", unsafe_allow_html=True)
-        if isinstance(c24,(int,float)):
-            st.markdown(
-                f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>",
-                unsafe_allow_html=True
-            )
+        st.markdown(
+            f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>" if isinstance(c24,(int,float)) else "—",
+            unsafe_allow_html=True
+        )
         # Big recommendation badge
         st.markdown(
             f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;border-radius:12px;"
@@ -1410,203 +1409,266 @@ def render_pretty_summary(result, horizon_days: int = 7):
         if isinstance(liq_pct,(int,float)): chips.append(f"Liquidity: {liq_pct:.1f}%")
         chips.append(f"RSI: {f'{rsi:.1f}' if isinstance(rsi,(int,float)) else '—'} · {_rsi_zone(rsi)}")
         chips.append(rec_text)
-        for chip in chips:
-            st.markdown(
-                f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:4px 8px;border-radius:12px;margin:2px'>{chip}</span>",
-                unsafe_allow_html=True
-            )
+        st.markdown(
+            " ".join([f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:6px 10px;border-radius:999px;margin-right:6px'>{t}</span>" for t in chips]),
+            unsafe_allow_html=True
+        )
 
     st.divider()
 
     # =========================
-    # Recommendation block - FIXED
+    # Recommendation block - FIXED BLANK AREA
     # =========================
     st.subheader("✅ Recommendation")
     rec_score = rec.get("score", None)
     colsR = st.columns([1.2, 2.2])
     with colsR[0]:
         st.markdown(
-            f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
-            f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>{rec_emoji} {rec_label}</span>",
+            f"<span style='display:inline-block;padding:6px 12px;border-radius:12px;"
+            f"background:{rec_color}22;color:{rec_color};font-weight:800'>{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
         if isinstance(rec_score, (int, float)):
             score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))
-            st.progress(score100/100.0, text=f"Model score: {rec_score:+.2f} → {score100}/100")
+            st.progress(score100, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
         else:
             st.caption("Model score unavailable.")
-        
-        # Source info
         rec_source = rec.get("source", "unknown")
         if rec_source == "gemini":
             st.caption("🤖 Powered by Google Gemini")
-        elif rec_source in ["gpt3", "gpt-3.5", "openai"]:
+        elif rec_source == "gpt3" or rec_source == "gpt-3.5":
             st.caption("🤖 Powered by OpenAI GPT")
         elif rec_source == "fallback":
             st.caption("⚙️ Rule-based analysis")
         else:
             st.caption("🤖 AI-generated insights")
-            
     with colsR[1]:
-        insight = rec.get("insight", "No detailed insights available.")
+        insight = rec.get("insight", "").strip()
         
-        # Extract key points from insight
-        def extract_key_points(text):
-            lines = [line.strip() for line in text.split('\n') if line.strip()]
-            key_points = []
+        # FIXED: Extract meaningful content from insight or provide fallback
+        if insight and len(insight) > 10:
+            # Try to extract key bullet points
+            lines = [line.strip() for line in insight.split('\n') if line.strip()]
+            displayed_content = []
             
-            # Look for bullet points or numbered lists
-            for line in lines:
-                if any(line.startswith(prefix) for prefix in ['•', '-', '*', '1.', '2.', '3.', '4.', '5.']):
-                    key_points.append(line)
-                elif ':' in line and len(line) < 200:  # Short lines with colons are likely key points
-                    key_points.append(line)
+            for line in lines[:4]:  # Show up to 4 lines
+                if line and not line.startswith('#'):
+                    displayed_content.append(line)
             
-            return key_points[:4]  # Return up to 4 key points
-        
-        key_points = extract_key_points(insight)
-        
-        if key_points:
-            for point in key_points:
-                st.write(f"• {point}")
+            if displayed_content:
+                for content in displayed_content:
+                    st.write(f"• {content}")
+            else:
+                # Fallback: show first part of insight
+                st.write(insight[:300] + "..." if len(insight) > 300 else insight)
         else:
-            # Fallback: show first few sentences
-            sentences = insight.split('.')[:3]
-            for sentence in sentences:
-                if sentence.strip():
-                    st.write(f"• {sentence.strip()}.")
+            # Fallback content when insight is empty
+            st.write(f"• Recommendation: {rec_label}")
+            st.write(f"• Current price: ${price:,.2f}")
+            if isinstance(c24,(int,float)):
+                st.write(f"• 24h change: {c24:+.2f}%")
+            if isinstance(rsi,(int,float)):
+                st.write(f"• RSI indicator: {rsi:.1f} ({_rsi_zone(rsi)})")
         
-        # Show forecast context note if available
+        # --- Forecast context note ---
         fc_note = result.get("forecast_note", "")
         if fc_note:
-            st.info(fc_note)
+            st.caption(fc_note)
 
     st.divider()
 
     # =========================
-    # Sentiment / Risks / Momentum - FIXED
+    # Sentiment / Risks / Momentum - FIXED MOMENTUM BLANK AREA
     # =========================
     c1, c2, c3 = st.columns([1.1, 1.1, 1])
-    
     with c1:
         st.subheader("📰 Sentiment")
-        pos = float(pcts.get("positive", 0.0))
-        neu = float(pcts.get("neutral", 0.0)) 
-        neg = float(pcts.get("negative", 0.0))
-        
-        # Create sentiment bar
+        pos = float(pcts.get("positive", 0.0)); neu = float(pcts.get("neutral", 0.0)); neg = float(pcts.get("negative", 0.0))
         st.markdown(_sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
-        
-        # Show sentiment summary
-        if pos > neg:
-            sentiment_summary = f"📈 Predominantly positive sentiment ({pos:.1f}%)"
-        elif neg > pos:
-            sentiment_summary = f"📉 Predominantly negative sentiment ({neg:.1f}%)"
-        else:
-            sentiment_summary = f"⚖️ Neutral sentiment balance"
-            
-        st.write(sentiment_summary)
-        
-        # Show top headlines sentiment
-        sent_table = result.get("sentiment_table", pd.DataFrame())
-        if not sent_table.empty:
-            st.write("**Recent Headlines:**")
-            for _, row in sent_table.head(2).iterrows():
-                emoji = "🟢" if row['label'] == 'positive' else ("🔴" if row['label'] == 'negative' else "🟡")
-                st.caption(f"{emoji} {row['text'][:80]}...")
+        ins = rec.get("insight","").strip() or "—"
+        st.info(ins)
 
     with c2:
         st.subheader("⚠️ Risks")
-        risk_items = []
-        
-        # Liquidity risk
+        risk_lines = []
         if isinstance(liq_pct,(int,float)):
-            if liq_pct < 5:
-                risk_items.append(f"🔴 **High Risk**: Low liquidity ({liq_pct:.1f}%)")
-            elif liq_pct < 10:
-                risk_items.append(f"🟡 **Medium Risk**: Moderate liquidity ({liq_pct:.1f}%)")
-            else:
-                risk_items.append(f"🟢 **Low Risk**: Good liquidity ({liq_pct:.1f}%)")
-        
-        # Regulatory risk
+            badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
+            risk_lines.append(f"{badge} Liquidity: 24h vol is {liq_pct:.1f}% of market cap.")
         arts = result.get("articles", []) or []
-        reg_keywords = ['sec', 'regulat', 'ban', 'lawsuit', 'enforcement', 'probe', 'review']
-        titles_text = " ".join([a.get("title","").lower() for a in arts])
-        if any(keyword in titles_text for keyword in reg_keywords):
-            risk_items.append("🟡 **Regulatory Risk**: Recent regulatory mentions")
-        
-        # Volatility risk based on RSI
-        if isinstance(rsi,(int,float)):
-            if rsi >= 70:
-                risk_items.append(f"🟡 **Overbought**: RSI at {rsi:.1f}")
-            elif rsi <= 30:
-                risk_items.append(f"🟢 **Oversold**: RSI at {rsi:.1f} - potential bounce")
-        
-        # Price momentum risk
-        if isinstance(c24,(int,float)) and isinstance(c7,(int,float)):
-            if c24 < -5 and c7 < -10:
-                risk_items.append("🔴 **Downtrend**: Negative momentum")
-            elif c24 > 5 and c7 > 10:
-                risk_items.append("🟢 **Uptrend**: Positive momentum")
-        
-        # Display risks
-        if risk_items:
-            for risk in risk_items:
-                st.write(risk)
-        else:
-            st.write("🟢 **Low Risk**: No major risk signals detected")
-        
-        # Composite score
+        joined = " ".join([a.get("title","") for a in arts])[:3000]
+        if re.search(r"\b(sec|regulat|ban|lawsuit|enforcement|probe|review)\b", joined, re.I):
+            risk_lines.append("🟡 Regulatory: recent headlines mention reviews/enforcement.")
         ex = result.get("explainability", {}) or {}
         comps = ex.get("components", {}) or {}
-        ttl = comps.get("total_score", None)
+        ttl  = comps.get("total_score", None)
         if ttl is not None:
             score = max(0, min(100, int(round(50 + 50*float(ttl)))))
-            st.progress(score/100.0, text=f"Risk Score: {score}/100")
+            st.progress(score, text=f"Composite Score: {score}/100")
+        st.write("\n\n".join(risk_lines) if risk_lines else "No notable risks detected.")
 
     with c3:
         st.subheader("📈 Momentum & RSI")
         
-        # 24h momentum
+        # FIXED: Provide actual content instead of trying to extract from insight
+        momentum_content = []
+        
+        # 24h momentum analysis
         if isinstance(c24,(int,float)):
             if c24 > 2:
-                st.write("🟢 **24h**: Strong upward momentum")
+                momentum_content.append("• **24h Momentum**: Strong positive (+{:.2f}%)".format(c24))
             elif c24 > 0:
-                st.write("🟡 **24h**: Slight upward momentum")
+                momentum_content.append("• **24h Momentum**: Slight gain (+{:.2f}%)".format(c24))
             elif c24 > -2:
-                st.write("⚪ **24h**: Sideways movement")
+                momentum_content.append("• **24h Momentum**: Sideways ({:+.2f}%)".format(c24))
             else:
-                st.write("🔴 **24h**: Downward pressure")
+                momentum_content.append("• **24h Momentum**: Declining ({:+.2f}%)".format(c24))
         else:
-            st.write("⚪ **24h**: Data unavailable")
-        
-        # 7d momentum
+            momentum_content.append("• **24h Momentum**: Data unavailable")
+            
+        # 7d momentum analysis  
         if isinstance(c7,(int,float)):
             if c7 > 5:
-                st.write("🟢 **7d**: Strong weekly gains")
+                momentum_content.append("• **7d Momentum**: Strong weekly trend (+{:.2f}%)".format(c7))
             elif c7 > 0:
-                st.write("🟡 **7d**: Modest weekly gains")
+                momentum_content.append("• **7d Momentum**: Weekly gain (+{:.2f}%)".format(c7))
             elif c7 > -5:
-                st.write("⚪ **7d**: Consolidation phase")
+                momentum_content.append("• **7d Momentum**: Consolidation ({:+.2f}%)".format(c7))
             else:
-                st.write("🔴 **7d**: Weekly decline")
+                momentum_content.append("• **7d Momentum**: Weekly decline ({:+.2f}%)".format(c7))
         else:
-            st.write("⚪ **7d**: Data unavailable")
-        
+            momentum_content.append("• **7d Momentum**: Data unavailable")
+            
         # RSI analysis
         if isinstance(rsi,(int,float)):
             zone = _rsi_zone(rsi)
-            if zone == "Overbought":
-                st.write(f"🔴 **RSI**: {rsi:.1f} - Overbought territory")
-            elif zone == "Oversold":
-                st.write(f"🟢 **RSI**: {rsi:.1f} - Oversold, potential bounce")
-            else:
-                st.write(f"🟡 **RSI**: {rsi:.1f} - Neutral zone")
+            momentum_content.append("• **RSI (14)**: {:.1f} - {}".format(rsi, zone))
         else:
-            st.write("⚪ **RSI**: Data unavailable")
+            momentum_content.append("• **RSI (14)**: Data unavailable")
+            
+        # Display the content
+        for content in momentum_content:
+            st.write(content)
 
     st.divider()
+
+    # =========================
+    # Strategy (What-if) - Keep original
+    # =========================
+    st.subheader("🧠 Strategy Simulation")
+    pos = float(pcts.get("positive", 0.0)); neg = float(pcts.get("negative", 0.0))
+    sim_score = (pos - neg) / 100.0
+    scenarios = generate_scenarios(
+        sim_score,
+        rsi if isinstance(rsi,(int,float)) else float("nan"),
+        c24 if isinstance(c24,(int,float)) else float("nan"),
+        c7 if isinstance(c7,(int,float)) else float("nan"),
+    )
+    if scenarios:
+        for s in scenarios:
+            st.write(f"👉 {s}")
+    else:
+        st.info("No active strategic signals. Keep monitoring for a break above the short-term channel or RSI drift toward 60+.")
+
+    st.divider()
+
+    # =========================
+    # Forecast (last 6M history + next N-day forecast) - Keep original  
+    # =========================
+    st.subheader(f"🔮 {horizon_days}-Day Forecast")
+
+    hist_df = result.get("history")
+    hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
+    ft = result.get("forecast_table", []) or []
+
+    # Build forecast rows for table
+    rows = []
+    for row in ft[:horizon_days]:
+        d = row.get("date")
+        dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
+        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
+        rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
+
+    if rows:
+        df_forecast = pd.DataFrame(rows).set_index("Date")
+        cL, cR = st.columns([1, 1.3])
+        with cL:
+            st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
+
+        with cR:
+            # Combine 6M history with forecast
+            combined = pd.DataFrame()
+            if not hist_df.empty and "price" in hist_df.columns:
+                combined["History"] = hist_df["price"].tail(180)
+
+            if not df_forecast.empty:
+                try:
+                    forecast_vals = df_forecast["Forecast ($)"].astype(float)
+                    forecast_vals.index = pd.to_datetime(df_forecast.index)
+                    combined = pd.concat([combined, forecast_vals.rename("Forecast")])
+                except Exception:
+                    pass
+
+            if not combined.empty:
+                import altair as alt
+                df_plot = combined.copy()
+
+                # Ensure datetime index is tz-naive
+                try:
+                    df_plot.index = df_plot.index.tz_convert(None)
+                except Exception:
+                    try:
+                        df_plot.index = df_plot.index.tz_localize(None)
+                    except Exception:
+                        pass
+
+                plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
+                plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
+
+                # Colors
+                color_scale = alt.Scale(
+                    domain=["History", "Forecast"],
+                    range=["#4e79a7", "#ff4d4f"]
+                )
+
+                base = alt.Chart(plot_df).encode(
+                    x=alt.X("Date:T", title="Date"),
+                    y=alt.Y("Value:Q", title="Price (USD)"),
+                    color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
+                    tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
+                )
+
+                # line + red dots on forecast
+                lines = base.mark_line(size=2)
+                points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
+
+                # Monte-Carlo IQR band (25–75%) if provided
+                mc_mean = result.get("mc_mean") or []
+                mc_lo   = result.get("mc_lo") or []
+                mc_hi   = result.get("mc_hi") or []
+                chart = (lines + points)
+                try:
+                    if mc_mean and len(mc_mean) == df_forecast.shape[0]:
+                        band_df = pd.DataFrame({
+                            "Date": pd.to_datetime(df_forecast.index),
+                            "lo": mc_lo,
+                            "hi": mc_hi,
+                        })
+                        band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
+                            x=alt.X("Date:T", title="Date"),
+                            y="lo:Q",
+                            y2="hi:Q",
+                        )
+                        chart = chart + band_chart
+                except Exception:
+                    pass
+
+                st.altair_chart(chart.interactive(), use_container_width=True)
+            else:
+                st.caption("_No forecast available._")
+
+    else:
+        st.caption("_No forecast available._")
 
     # =========================
     # Strategy (What-if) - ENHANCED
