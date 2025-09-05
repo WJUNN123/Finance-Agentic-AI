@@ -1577,254 +1577,99 @@ def render_pretty_summary(result, horizon_days: int = 7):
     # =========================
     st.subheader(f"🔮 {horizon_days}-Day Forecast")
 
-    hist_df = result.get("history")
-    hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
-    ft = result.get("forecast_table", []) or []
+hist_df = result.get("history")
+hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
+ft = result.get("forecast_table", []) or []
 
-    # Build forecast rows for table
-    rows = []
-    for row in ft[:horizon_days]:
-        d = row.get("date")
-        dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
-        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
-        rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
+# Build forecast rows for table
+rows = []
+for row in ft[:horizon_days]:
+    d = row.get("date")
+    dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
+    v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
+    rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
 
-    if rows:
-        df_forecast = pd.DataFrame(rows).set_index("Date")
-        cL, cR = st.columns([1, 1.3])
-        with cL:
-            st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
+if rows:
+    df_forecast = pd.DataFrame(rows).set_index("Date")
+    cL, cR = st.columns([1, 1.3])
+    with cL:
+        st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
 
-        with cR:
-            # Combine 6M history with forecast
-            combined = pd.DataFrame()
-            if not hist_df.empty and "price" in hist_df.columns:
-                combined["History"] = hist_df["price"].tail(180)
+    with cR:
+        # Combine 6M history with forecast
+        combined = pd.DataFrame()
+        if not hist_df.empty and "price" in hist_df.columns:
+            combined["History"] = hist_df["price"].tail(180)
 
-            if not df_forecast.empty:
+        if not df_forecast.empty:
+            try:
+                forecast_vals = df_forecast["Forecast ($)"].astype(float)
+                forecast_vals.index = pd.to_datetime(df_forecast.index)
+                combined = pd.concat([combined, forecast_vals.rename("Forecast")])
+            except Exception:
+                pass
+
+        if not combined.empty:
+            import altair as alt
+            df_plot = combined.copy()
+
+            # Ensure datetime index is tz-naive
+            try:
+                df_plot.index = df_plot.index.tz_convert(None)
+            except Exception:
                 try:
-                    forecast_vals = df_forecast["Forecast ($)"].astype(float)
-                    forecast_vals.index = pd.to_datetime(df_forecast.index)
-                    combined = pd.concat([combined, forecast_vals.rename("Forecast")])
+                    df_plot.index = df_plot.index.tz_localize(None)
                 except Exception:
                     pass
 
-            if not combined.empty:
-                import altair as alt
-                df_plot = combined.copy()
+            plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
+            plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
 
-                # Ensure datetime index is tz-naive
-                try:
-                    df_plot.index = df_plot.index.tz_convert(None)
-                except Exception:
-                    try:
-                        df_plot.index = df_plot.index.tz_localize(None)
-                    except Exception:
-                        pass
+            # Colors
+            color_scale = alt.Scale(
+                domain=["History", "Forecast"],
+                range=["#4e79a7", "#ff4d4f"]
+            )
 
-                plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
-                plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
+            base = alt.Chart(plot_df).encode(
+                x=alt.X("Date:T", title="Date"),
+                y=alt.Y("Value:Q", title="Price (USD)"),
+                color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
+                tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
+            )
 
-                # Colors
-                color_scale = alt.Scale(
-                    domain=["History", "Forecast"],
-                    range=["#4e79a7", "#ff4d4f"]
-                )
+            # line + red dots on forecast
+            lines = base.mark_line(size=2)
+            points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
 
-                base = alt.Chart(plot_df).encode(
-                    x=alt.X("Date:T", title="Date"),
-                    y=alt.Y("Value:Q", title="Price (USD)"),
-                    color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
-                    tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
-                )
+            # Monte-Carlo IQR band (25–75%) if provided
+            mc_mean = result.get("mc_mean") or []
+            mc_lo   = result.get("mc_lo") or []
+            mc_hi   = result.get("mc_hi") or []
+            chart = (lines + points)
+            try:
+                if mc_mean and len(mc_mean) == df_forecast.shape[0]:
+                    band_df = pd.DataFrame({
+                        "Date": pd.to_datetime(df_forecast.index),
+                        "lo": mc_lo,
+                        "hi": mc_hi,
+                    })
+                    band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
+                        x=alt.X("Date:T", title="Date"),
+                        y="lo:Q",
+                        y2="hi:Q",
+                    )
+                    chart = chart + band_chart
+            except Exception:
+                pass
 
-                # line + red dots on forecast
-                lines = base.mark_line(size=2)
-                points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
-
-                # Monte-Carlo IQR band (25–75%) if provided
-                mc_mean = result.get("mc_mean") or []
-                mc_lo   = result.get("mc_lo") or []
-                mc_hi   = result.get("mc_hi") or []
-                chart = (lines + points)
-                try:
-                    if mc_mean and len(mc_mean) == df_forecast.shape[0]:
-                        band_df = pd.DataFrame({
-                            "Date": pd.to_datetime(df_forecast.index),
-                            "lo": mc_lo,
-                            "hi": mc_hi,
-                        })
-                        band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
-                            x=alt.X("Date:T", title="Date"),
-                            y="lo:Q",
-                            y2="hi:Q",
-                        )
-                        chart = chart + band_chart
-                except Exception:
-                    pass
-
-                st.altair_chart(chart.interactive(), use_container_width=True)
-            else:
-                st.caption("_No forecast available._")
-
-    else:
-        st.caption("_No forecast available._")
-
-    # =========================
-    # Strategy (What-if) - ENHANCED
-    # =========================
-    st.subheader("🧠 Strategy Simulation")
-    pos = float(pcts.get("positive", 0.0))
-    neg = float(pcts.get("negative", 0.0))
-    sim_score = (pos - neg) / 100.0
-    
-    scenarios = generate_scenarios(
-        sim_score,
-        rsi if isinstance(rsi,(int,float)) else float("nan"),
-        c24 if isinstance(c24,(int,float)) else float("nan"),
-        c7 if isinstance(c7,(int,float)) else float("nan"),
-    )
-    
-    if scenarios:
-        for scenario in scenarios:
-            st.write(scenario)
-    else:
-        # Generate basic scenarios based on current conditions
-        basic_scenarios = []
-        
-        if isinstance(rsi,(int,float)) and rsi < 35:
-            basic_scenarios.append("🟡 **RSI Signal**: Approaching oversold - watch for reversal signs")
-        elif isinstance(rsi,(int,float)) and rsi > 65:
-            basic_scenarios.append("🟡 **RSI Signal**: Approaching overbought - consider profit-taking")
-            
-        if isinstance(c24,(int,float)) and isinstance(c7,(int,float)):
-            if c24 > 0 and c7 < 0:
-                basic_scenarios.append("🔄 **Momentum Shift**: Short-term recovery vs weekly decline")
-            elif c24 < 0 and c7 > 0:
-                basic_scenarios.append("⚠️ **Pullback**: Daily dip in weekly uptrend")
-                
-        if pos > 60:
-            basic_scenarios.append("📈 **Sentiment Boost**: Positive news flow could drive prices higher")
-        elif neg > 60:
-            basic_scenarios.append("📉 **Sentiment Risk**: Negative headlines may pressure prices")
-            
-        if basic_scenarios:
-            for scenario in basic_scenarios:
-                st.write(scenario)
+            st.altair_chart(chart.interactive(), use_container_width=True)
         else:
-            st.info("📊 **Current State**: Market appears to be in a consolidation phase. Monitor for breakout signals or significant news catalysts.")
+            st.caption("_No forecast available._")
 
-    st.divider()
+else:
+    st.caption("_No forecast available._")
 
-    # =========================
-    # Forecast - ENHANCED
-    # =========================
-    st.subheader(f"🔮 {horizon_days}-Day Forecast")
-
-    hist_df = result.get("history")
-    hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
-    ft = result.get("forecast_table", []) or []
-
-    if ft:
-        # Build forecast table
-        forecast_data = []
-        for i, row in enumerate(ft[:horizon_days]):
-            d = row.get("date")
-            dstr = d.strftime("%Y-%m-%d") if d is not None else f"Day +{i+1}"
-            
-            ensemble_val = row.get("ensemble")
-            prophet_val = row.get("prophet") 
-            lstm_val = row.get("lstm")
-            
-            # Use the best available prediction
-            pred_val = ensemble_val or prophet_val or lstm_val
-            
-            if pred_val is not None:
-                change_pct = ((pred_val - price) / price * 100) if isinstance(price,(int,float)) and price > 0 else 0
-                forecast_data.append({
-                    "Date": dstr,
-                    "Price ($)": f"${pred_val:,.2f}",
-                    "Change (%)": f"{change_pct:+.2f}%"
-                })
-
-        if forecast_data:
-            # Display forecast table
-            cL, cR = st.columns([1.2, 1.8])
-            
-            with cL:
-                st.write("**Predicted Prices:**")
-                forecast_df = pd.DataFrame(forecast_data)
-                st.dataframe(forecast_df, hide_index=True, use_container_width=True)
-                
-                # Summary stats
-                if len(ft) > 0:
-                    last_pred = ft[-1].get("ensemble") or ft[-1].get("prophet") or ft[-1].get("lstm")
-                    if last_pred and isinstance(price,(int,float)) and price > 0:
-                        total_change = (last_pred - price) / price * 100
-                        st.metric(
-                            f"{horizon_days}-Day Expected Return", 
-                            f"{total_change:+.2f}%",
-                            delta=f"${last_pred - price:+,.2f}"
-                        )
-
-            with cR:
-                # Create chart if we have history and forecast
-                if not hist_df.empty and "price" in hist_df.columns and ft:
-                    try:
-                        import matplotlib.pyplot as plt
-                        
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        
-                        # Plot recent history (last 60 days)
-                        recent_hist = hist_df["price"].tail(60)
-                        ax.plot(recent_hist.index, recent_hist.values, 
-                               label="Historical Price", linewidth=2, color="#4e79a7")
-                        
-                        # Plot forecast
-                        forecast_dates = []
-                        forecast_prices = []
-                        
-                        last_date = recent_hist.index[-1]
-                        for i, row in enumerate(ft[:horizon_days]):
-                            forecast_dates.append(last_date + pd.Timedelta(days=i+1))
-                            pred_val = row.get("ensemble") or row.get("prophet") or row.get("lstm")
-                            if pred_val:
-                                forecast_prices.append(pred_val)
-                        
-                        if forecast_dates and forecast_prices:
-                            ax.plot(forecast_dates, forecast_prices, 
-                                   label="Forecast", linewidth=2, color="#ff7f0e", linestyle="--")
-                            ax.scatter(forecast_dates, forecast_prices, 
-                                     color="#ff7f0e", s=30, zorder=5)
-                        
-                        ax.set_title(f"{name} - Price Forecast", fontsize=14, fontweight='bold')
-                        ax.set_ylabel("Price (USD)")
-                        ax.grid(True, alpha=0.3)
-                        ax.legend()
-                        
-                        # Format dates on x-axis
-                        fig.autofmt_xdate()
-                        
-                        st.pyplot(fig)
-                        
-                    except Exception as e:
-                        st.warning(f"Chart generation failed: {str(e)}")
-                        st.info("📈 Forecast data available in table format")
-                else:
-                    st.info("📊 Chart requires both historical data and forecast predictions")
-        else:
-            st.warning("⚠️ No valid forecast data available")
-    else:
-        st.warning("⚠️ Forecast generation failed - insufficient data")
-
-    # Final summary box
-    st.info(
-        f"**Summary**: {rec_label} recommendation for {name} "
-        f"with {pos:.0f}% positive sentiment. "
-        f"RSI at {rsi:.1f if isinstance(rsi,(int,float)) else '—'}, "
-        f"24h change: {c24:.2f if isinstance(c24,(int,float)) else '—'}%. "
-        "This analysis is for educational purposes only."
-    )
 
 
 # =================================================================
