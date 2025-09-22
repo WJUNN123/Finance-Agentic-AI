@@ -748,62 +748,35 @@ def init_faiss(dim=None):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
     if not EMB_AVAILABLE:
         return None, []
-    
+    if EMB_MODEL is None:
+        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME)
+    dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
     try:
-        if EMB_MODEL is None:
-            # Add explicit device parameter to fix the NotImplementedError
-            EMB_MODEL = SentenceTransformer(
-                EMB_MODEL_NAME, 
-                device='cpu',
-                trust_remote_code=True
-            )
-        
-        dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
-        
-        try:
-            if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(METADATA_STORE):
-                index = faiss.read_index(FAISS_INDEX_PATH)
-                metas = json.load(open(METADATA_STORE))
-                FAISS_INDEX = index
-                FAISS_META[:] = metas
-                return index, FAISS_META
-        except Exception:
-            pass
-        
-        index = faiss.IndexFlatL2(dim_local)
-        FAISS_INDEX = index
-        FAISS_META = []
-        return index, FAISS_META
-    
-    except Exception as e:
-        print(f"FAISS initialization failed: {e}")
-        # Disable embeddings on failure
-        global EMB_AVAILABLE
-        EMB_AVAILABLE = False
-        return None, []
+        if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(METADATA_STORE):
+            index = faiss.read_index(FAISS_INDEX_PATH)
+            metas = json.load(open(METADATA_STORE))
+            FAISS_INDEX = index
+            FAISS_META[:] = metas
+            return index, FAISS_META
+    except Exception:
+        pass
+    index = faiss.IndexFlatL2(dim_local)
+    FAISS_INDEX = index
+    FAISS_META = []
+    return index, FAISS_META
 
-try:
-    if EMB_AVAILABLE:
-        init_faiss()
-except Exception as e:
-    print(f"Warning: Embeddings disabled due to error: {e}")
-    EMB_AVAILABLE = False
+if EMB_AVAILABLE:
+    init_faiss()
 
 def add_long_term_item(text: str, meta: dict):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
     if not EMB_AVAILABLE:
         return False
-    
+    if EMB_MODEL is None:
+        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME)
+    emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
+    fid = len(FAISS_META)
     try:
-        if EMB_MODEL is None:
-            EMB_MODEL = SentenceTransformer(
-                EMB_MODEL_NAME,
-                device='cpu',
-                trust_remote_code=True
-            )
-        
-        emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
-        fid = len(FAISS_META)
         FAISS_INDEX.add(emb)
         FAISS_META.append({"id": fid, "text": text, "meta": meta})
         faiss.write_index(FAISS_INDEX, FAISS_INDEX_PATH)
@@ -816,17 +789,16 @@ def add_long_term_item(text: str, meta: dict):
 def retrieve_similar(query: str, k: int=5):
     if not EMB_AVAILABLE or FAISS_INDEX is None or EMB_MODEL is None:
         return []
-    
+    q_emb = EMB_MODEL.encode([query], convert_to_numpy=True).astype("float32")
     try:
-        q_emb = EMB_MODEL.encode([query], convert_to_numpy=True).astype("float32")
         D, I = FAISS_INDEX.search(q_emb, min(k, FAISS_INDEX.ntotal))
-        results = []
-        for idx in I[0]:
-            if idx < len(FAISS_META):
-                results.append(FAISS_META[idx])
-        return results
     except Exception:
         return []
+    results = []
+    for idx in I[0]:
+        if idx < len(FAISS_META):
+            results.append(FAISS_META[idx])
+    return results
 
 # =================================================================
 # 3) Training helpers (your code)
