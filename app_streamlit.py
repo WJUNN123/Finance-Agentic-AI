@@ -738,7 +738,7 @@ def load_recent_session(session_id: str, limit: int = 20):
         return []
 
 # =================================================================
-# 2) Long-term memory (FAISS) — your code with safe guards
+# 2) Long-term memory (FAISS) — MODIFIED AND CORRECTED
 # =================================================================
 EMB_MODEL = None
 FAISS_INDEX = None
@@ -749,55 +749,77 @@ def init_faiss(dim=None):
     if not EMB_AVAILABLE:
         return None, []
     if EMB_MODEL is None:
-        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME)
+        # CORRECTED LINE: Explicitly set the device to 'cpu'.
+        # This is the line that fixes the NotImplementedError.
+        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
+        
     dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
     try:
         if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(METADATA_STORE):
             index = faiss.read_index(FAISS_INDEX_PATH)
-            metas = json.load(open(METADATA_STORE))
+            with open(METADATA_STORE, 'r') as f:
+                metas = json.load(f)
             FAISS_INDEX = index
             FAISS_META[:] = metas
+            st.toast("✅ Loaded long-term memory from disk.")
             return index, FAISS_META
-    except Exception:
-        pass
+    except Exception as e:
+        st.warning(f"⚠️ Could not load FAISS memory: {e}. Creating a new one.")
+        
     index = faiss.IndexFlatL2(dim_local)
     FAISS_INDEX = index
     FAISS_META = []
     return index, FAISS_META
 
+# NEW FUNCTION: A separate function to handle saving to disk.
+def save_faiss_memory():
+    """Saves the current FAISS index and metadata to disk."""
+    if not EMB_AVAILABLE or FAISS_INDEX is None:
+        return False
+    try:
+        faiss.write_index(FAISS_INDEX, FAISS_INDEX_PATH)
+        with open(METADATA_STORE, "w") as f:
+            json.dump(FAISS_META, f)
+        st.toast("💾 Saved long-term memory to disk.")
+        return True
+    except Exception as e:
+        print(f"FAISS save error: {e}")
+        st.error(f"Error saving FAISS memory: {e}")
+        return False
+
+# Call init_faiss on script start
 if EMB_AVAILABLE:
     init_faiss()
 
 def add_long_term_item(text: str, meta: dict):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
-    if not EMB_AVAILABLE:
+    if not EMB_AVAILABLE or FAISS_INDEX is None:
         return False
     if EMB_MODEL is None:
-        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME)
+        # Safeguard: ensure model is loaded with the correct device
+        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
+        
     emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
     fid = len(FAISS_META)
     try:
         FAISS_INDEX.add(emb)
         FAISS_META.append({"id": fid, "text": text, "meta": meta})
-        faiss.write_index(FAISS_INDEX, FAISS_INDEX_PATH)
-        json.dump(FAISS_META, open(METADATA_STORE, "w"))
         return True
     except Exception as e:
-        print("FAISS add error:", e)
+        print(f"FAISS add error: {e}")
         return False
 
 def retrieve_similar(query: str, k: int=5):
-    if not EMB_AVAILABLE or FAISS_INDEX is None or EMB_MODEL is None:
+    if not EMB_AVAILABLE or FAISS_INDEX is None or EMB_MODEL is None or FAISS_INDEX.ntotal == 0:
         return []
     q_emb = EMB_MODEL.encode([query], convert_to_numpy=True).astype("float32")
     try:
-        D, I = FAISS_INDEX.search(q_emb, min(k, FAISS_INDEX.ntotal))
-    except Exception:
+        search_k = min(k, FAISS_INDEX.ntotal)
+        D, I = FAISS_INDEX.search(q_emb, search_k)
+    except Exception as e:
+        print(f"FAISS search error: {e}")
         return []
-    results = []
-    for idx in I[0]:
-        if idx < len(FAISS_META):
-            results.append(FAISS_META[idx])
+    results = [FAISS_META[idx] for idx in I[0] if idx < len(FAISS_META)]
     return results
 
 # =================================================================
