@@ -740,6 +740,21 @@ def load_recent_session(session_id: str, limit: int = 20):
 # =================================================================
 # 2) Long-term memory (FAISS) — your code with safe guards
 # =================================================================
+try:
+    from sentence_transformers import SentenceTransformer
+    import faiss
+    EMB_AVAILABLE = True
+    print("Embeddings libraries loaded successfully")
+except Exception as e:
+    print(f"Embeddings not available: {e}")
+    EMB_AVAILABLE = False
+
+# Embeddings / FAISS paths
+FAISS_INDEX_PATH = "faiss.index"
+METADATA_STORE = "faiss_meta.json"
+EMB_MODEL_NAME = "all-MiniLM-L6-v2"
+
+# Initialize with better error handling
 EMB_MODEL = None
 FAISS_INDEX = None
 FAISS_META = []
@@ -747,26 +762,59 @@ FAISS_META = []
 def init_faiss(dim=None):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
     if not EMB_AVAILABLE:
+        print("Embeddings disabled - FAISS not available")
         return None, []
-    if EMB_MODEL is None:
-        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME)
-    dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
+        
     try:
-        if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(METADATA_STORE):
-            index = faiss.read_index(FAISS_INDEX_PATH)
-            metas = json.load(open(METADATA_STORE))
-            FAISS_INDEX = index
-            FAISS_META[:] = metas
-            return index, FAISS_META
-    except Exception:
-        pass
-    index = faiss.IndexFlatL2(dim_local)
-    FAISS_INDEX = index
-    FAISS_META = []
-    return index, FAISS_META
+        if EMB_MODEL is None:
+            # Initialize with explicit device and error handling
+            EMB_MODEL = SentenceTransformer(
+                EMB_MODEL_NAME,
+                device='cpu',  # Force CPU to avoid device issues
+                cache_folder=None
+            )
+            print("SentenceTransformer model loaded successfully")
+        
+        dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
+        
+        # Try to load existing index
+        try:
+            if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(METADATA_STORE):
+                index = faiss.read_index(FAISS_INDEX_PATH)
+                with open(METADATA_STORE, 'r') as f:
+                    metas = json.load(f)
+                FAISS_INDEX = index
+                FAISS_META[:] = metas
+                print(f"Loaded existing FAISS index with {len(metas)} items")
+                return index, FAISS_META
+        except Exception as e:
+            print(f"Could not load existing index: {e}")
+        
+        # Create new index
+        index = faiss.IndexFlatL2(dim_local)
+        FAISS_INDEX = index
+        FAISS_META = []
+        print("Created new FAISS index")
+        return index, FAISS_META
+        
+    except Exception as e:
+        print(f"Failed to initialize FAISS: {e}")
+        # Disable embeddings if initialization fails
+        global EMB_AVAILABLE
+        EMB_AVAILABLE = False
+        EMB_MODEL = None
+        FAISS_INDEX = None
+        FAISS_META = []
+        return None, []
 
-if EMB_AVAILABLE:
-    init_faiss()
+# Safe initialization - don't crash if embeddings fail
+try:
+    if EMB_AVAILABLE:
+        init_faiss()
+        print("FAISS initialized successfully")
+except Exception as e:
+    print(f"Warning: FAISS initialization failed: {e}")
+    EMB_AVAILABLE = False
 
 def add_long_term_item(text: str, meta: dict):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
