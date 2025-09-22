@@ -38,7 +38,7 @@ import altair as alt
 
 
 # ML / NLP libs
-from transformers import pipeline, AutoTokenizer, AutoModel
+from transformers import pipeline, AutoModel
 from huggingface_hub import login as hf_login
 
 # Prophet
