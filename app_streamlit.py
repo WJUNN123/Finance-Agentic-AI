@@ -34,6 +34,8 @@ import google.generativeai as genai
 
 # UI
 import streamlit as st
+import altair as alt
+
 
 # ML / NLP libs
 from transformers import pipeline
@@ -475,14 +477,9 @@ def scale(x, lo, hi):
         return 0.0
     return max(-1.0, min(1.0, 2 * (x - lo) / (hi - lo) - 1))
 
-
-# ===================================================================
-# STEP 3: Add these new helper functions before your existing functions
-# ===================================================================
 def recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days):
-    # This function generates a fallback recommendation based on basic rules
-    recommendation = "HOLD / WAIT"  # Default to HOLD/WAIT if no GPT-3 response
-    score = 0.5  # Neutral score (can be improved with your rule-based logic)
+    recommendation = "HOLD / WAIT"
+    score = 0.5
     
     if sentiment > 0.5:
         recommendation = "BUY"
@@ -490,7 +487,6 @@ def recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days):
     elif sentiment < -0.5:
         recommendation = "SELL / AVOID"
         score = 0.3
-    # Further conditions can be added here based on other factors like price change, RSI, etc.
 
     return {
         "rating": recommendation,
@@ -498,12 +494,6 @@ def recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days):
         "insight": f"Based on sentiment {sentiment}, the recommendation is {recommendation}.",
         "source": "fallback"
     }
-
-import streamlit as st
-import os
-import google.generativeai as genai
-import math
-from typing import List, Dict
 
 def call_gpt3_for_insight(
     coin_id: str,
@@ -522,28 +512,21 @@ def call_gpt3_for_insight(
     max_tokens: int = 500,
     temperature: float = 0.3
 ) -> Dict:
-    """Call Google Gemini to generate personalized insights and recommendations"""
+    gemini_api_key = st.secrets.get("gemini", {}).get("api_key", None) or os.getenv("GEMINI_API_KEY")
     
-    # Configure Gemini API key
-    gemini_api_key = st.secrets.get("gemini", {}).get("api_key", None)
     if not gemini_api_key:
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
-    
-    if gemini_api_key:
-        try:
-            # Successfully retrieved the API key, you can now configure the Gemini model
-            genai.configure(api_key=gemini_api_key)
-        except Exception as e:
-            st.warning(f"Error configuring Gemini API: {str(e)}")
-            return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
-    else:
         st.warning("Gemini API key not found. Falling back to rule-based analysis.")
         return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
     
-    # Prepare headlines context
+    try:
+        genai.configure(api_key=gemini_api_key)
+    except Exception as e:
+        st.warning(f"Error configuring Gemini API: {str(e)}")
+        return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
+
     headlines_context = ""
     if top_headlines:
-        headlines_context = f"\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
+        headlines_context = "\n\nTop recent headlines:\n" + "\n".join([f"- {h}" for h in top_headlines[:5]])
 
     def safe_format(val, default="N/A", format_str="{:.2f}"):
         if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -552,12 +535,7 @@ def call_gpt3_for_insight(
 
     rsi_zone = "N/A"
     if not (isinstance(rsi, float) and math.isnan(rsi)):
-        if rsi >= 70:
-            rsi_zone = "Overbought"
-        elif rsi <= 30:
-            rsi_zone = "Oversold"
-        else:
-            rsi_zone = "Neutral"
+        rsi_zone = "Overbought" if rsi >= 70 else "Oversold" if rsi <= 30 else "Neutral"
 
     prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}) and provide investment insights.
     
@@ -591,112 +569,48 @@ def call_gpt3_for_insight(
     
     Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
-    # Calculate token usage (input tokens + output tokens)
-    input_tokens = len(prompt.split())  # Approximate token count for the prompt
-    total_tokens = input_tokens + max_tokens
-    
-    # Ensure token limit is not exceeded (4096 tokens for many models)
-    if total_tokens > 4096:
-        st.warning(f"Total token count exceeds the model limit. Adjusting max tokens.")
-        max_tokens = 4096 - input_tokens  # Adjust to fit within the limit
-
     try:
-        # Initialize the basic Gemini model (for free-tier users)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        
-        # Configure generation parameters
-        generation_config = genai.types.GenerationConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-            top_p=0.9,
-            top_k=40
-        )
-        
-        # Generate response
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
-        
+        model = genai.GenerativeModel('gemini-pro')
+        response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(
+            temperature=temperature, max_output_tokens=max_tokens
+        ))
         gemini_response = response.text.strip()
-
-        # Extract the recommendation and calculate the score
         rating = extract_recommendation(gemini_response)
         score = calculate_score_from_response(gemini_response, sentiment, pct_24h, pct_7d, rsi)
         
-        return {
-            "rating": rating,
-            "score": score,
-            "insight": gemini_response,
-            "source": "gemini"
-        }
+        return {"rating": rating, "score": score, "insight": gemini_response, "source": "gemini"}
         
     except Exception as e:
         st.warning(f"Gemini API error: {e}. Falling back to rule-based analysis.")
-        fallback_result = recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
-        fallback_result["source"] = "fallback"
-        return fallback_result
+        return recommend_and_insight(sentiment, pct_24h, pct_7d, rsi, risk, horizon_days)
 
-        
 def calculate_score_from_response(gpt_response: str, sentiment: float, pct_24h: float, pct_7d: float, rsi: float) -> float:
-    """Calculate a numerical score based on Gemini response and market data"""
     response_lower = gpt_response.lower()
-    
     base_score = 0.0
-    
-    if sentiment is not None:
-        base_score += 0.4 * sentiment
-    
-    if pct_24h is not None and not math.isnan(pct_24h):
-        momentum_24 = max(-1.0, min(1.0, pct_24h / 15.0))
-        base_score += 0.2 * momentum_24
-    
-    if pct_7d is not None and not math.isnan(pct_7d):
-        momentum_7 = max(-1.0, min(1.0, pct_7d / 40.0))
-        base_score += 0.2 * momentum_7
-    
+    if sentiment is not None: base_score += 0.4 * sentiment
+    if pct_24h is not None and not math.isnan(pct_24h): base_score += 0.2 * max(-1.0, min(1.0, pct_24h / 15.0))
+    if pct_7d is not None and not math.isnan(pct_7d): base_score += 0.2 * max(-1.0, min(1.0, pct_7d / 40.0))
     if rsi is not None and not math.isnan(rsi):
-        if rsi >= 70:
-            rsi_component = -0.2
-        elif rsi <= 30:
-            rsi_component = 0.2
-        else:
-            rsi_component = (50 - rsi) / 100.0
+        rsi_component = -0.2 if rsi >= 70 else 0.2 if rsi <= 30 else (50 - rsi) / 100.0
         base_score += 0.2 * rsi_component
     
-    gpt_adjustment = 0.0
     positive_words = ["bullish", "positive", "strong", "buy", "upward", "growth", "opportunity"]
     negative_words = ["bearish", "negative", "weak", "sell", "downward", "risk", "caution"]
+    pos_count = sum(1 for word in positive_words if word in response_lower)
+    neg_count = sum(1 for word in negative_words if word in response_lower)
     
-    positive_count = sum(1 for word in positive_words if word in response_lower)
-    negative_count = sum(1 for word in negative_words if word in response_lower)
-    
-    if positive_count > negative_count:
-        gpt_adjustment = 0.1 * (positive_count - negative_count) / 10.0
-    elif negative_count > positive_count:
-        gpt_adjustment = -0.1 * (negative_count - positive_count) / 10.0
-    
-    final_score = base_score + gpt_adjustment
-    return max(-1.0, min(1.0, final_score))
+    gpt_adjustment = 0.1 * (pos_count - neg_count) / 10.0 if pos_count > neg_count else -0.1 * (neg_count - pos_count) / 10.0
+    return max(-1.0, min(1.0, base_score + gpt_adjustment))
 
 def extract_recommendation(gemini_response: str) -> str:
-    """Extract BUY/SELL/HOLD recommendation from Gemini response"""
     response_lower = gemini_response.lower()
-    
-    if any(phrase in response_lower for phrase in ["strong buy", "buy recommendation", "recommend buying"]):
-        return "BUY"
-    elif any(phrase in response_lower for phrase in ["buy", "accumulate", "long position"]):
-        if "avoid" not in response_lower and "don't" not in response_lower:
-            return "BUY"
-    elif any(phrase in response_lower for phrase in ["sell", "short", "avoid", "exit"]):
-        return "SELL / AVOID"
-    elif any(phrase in response_lower for phrase in ["hold", "wait", "neutral", "sideways"]):
-        return "HOLD / WAIT"
-    
+    if any(p in response_lower for p in ["strong buy", "buy recommendation", "recommend buying"]): return "BUY"
+    if any(p in response_lower for p in ["buy", "accumulate", "long position"]) and "avoid" not in response_lower and "don't" not in response_lower: return "BUY"
+    if any(p in response_lower for p in ["sell", "short", "avoid", "exit"]): return "SELL / AVOID"
     return "HOLD / WAIT"
 
 # =================================================================
-# 1) MEMORY DB (exactly your code, unchanged)
+# 1) MEMORY DB
 # =================================================================
 def init_memory_db(path=MEM_DB):
     con = sqlite3.connect(path, check_same_thread=False)
@@ -749,8 +663,7 @@ def init_faiss(dim=None):
     if not EMB_AVAILABLE:
         return None, []
     if EMB_MODEL is None:
-        # CORRECTED LINE: Explicitly set the device to 'cpu'.
-        # This is the line that fixes the NotImplementedError.
+        # THE FIX IS HERE: Explicitly set device to 'cpu'.
         EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
         
     dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
@@ -771,7 +684,6 @@ def init_faiss(dim=None):
     FAISS_META = []
     return index, FAISS_META
 
-# NEW FUNCTION: A separate function to handle saving to disk.
 def save_faiss_memory():
     """Saves the current FAISS index and metadata to disk."""
     if not EMB_AVAILABLE or FAISS_INDEX is None:
@@ -796,7 +708,6 @@ def add_long_term_item(text: str, meta: dict):
     if not EMB_AVAILABLE or FAISS_INDEX is None:
         return False
     if EMB_MODEL is None:
-        # Safeguard: ensure model is loaded with the correct device
         EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
         
     emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
@@ -823,7 +734,7 @@ def retrieve_similar(query: str, k: int=5):
     return results
 
 # =================================================================
-# 3) Training helpers (your code)
+# 3) Training helpers
 # =================================================================
 def collect_training_data(coin_id, lookback_days=180, horizon=7):
     df = coingecko_chart(coin_id, days=lookback_days+horizon)
@@ -852,7 +763,7 @@ def retrain_lstm_for_coin(coin_id, epochs=5):
     return True, path
 
 # =================================================================
-# 4) Planner + Explainability (your code)
+# 4) Planner + Explainability
 # =================================================================
 def rule_based_plan(market, sentiment_score_val, rsi, risk="medium", horizon_days=7):
     steps = []
@@ -882,47 +793,29 @@ def explain_trace_components(agg_sent, pct_24h, pct_7d, rsi):
 
     rsi_dev = 0.0
     if not (isinstance(rsi, float) and math.isnan(rsi)):
-        if rsi >= 70:
-            rsi_dev = -1.0
-        elif rsi <= 30:
-            rsi_dev = 1.0
-        else:
-            rsi_dev = (50 - rsi) / 20.0
+        rsi_dev = -1.0 if rsi >= 70 else 1.0 if rsi <= 30 else (50 - rsi) / 20.0
 
     weights = {"w_sent": 0.45, "w_m24": 0.2, "w_m7": 0.2, "w_rsi": 0.15}
-
     comp = {
         "sentiment_component": float(weights["w_sent"] * agg_sent),
         "mom24_component": float(weights["w_m24"] * mom24),
         "mom7_component": float(weights["w_m7"] * mom7),
         "rsi_component": float(weights["w_rsi"] * rsi_dev),
     }
-
     comp["total_score"] = sum(comp.values())
     return comp, weights
 
 def generate_scenarios(sentiment: float, rsi: float, pct_24h: float, pct_7d: float) -> List[str]:
     scenarios = []
-
-    if sentiment < -0.2:
-        scenarios.append("🟡 If the Fed signals a pause or rate cut next month → possible bullish reversal.")
-
-    if rsi <= 35:
-        scenarios.append("🟢 RSI is nearing oversold territory → short-term bounce likely (watch for reversal).")
-
-    if pct_7d < -8:
-        scenarios.append("🔻 If price breaks below weekly support → 5–10% downside risk.")
-
-    if -0.15 < sentiment < 0.15 and -7 < pct_24h < 7:
-        scenarios.append("⚖️ If no external catalyst occurs → price may continue to consolidate sideways.")
-
-    if sentiment > 0.05 and pct_24h > 0:
-        scenarios.append("🔄 Sentiment recovery in progress → sideways to slightly bullish expected.")
-
+    if sentiment < -0.2: scenarios.append("🟡 If the Fed signals a pause or rate cut next month → possible bullish reversal.")
+    if rsi <= 35: scenarios.append("🟢 RSI is nearing oversold territory → short-term bounce likely (watch for reversal).")
+    if pct_7d < -8: scenarios.append("🔻 If price breaks below weekly support → 5–10% downside risk.")
+    if -0.15 < sentiment < 0.15 and -7 < pct_24h < 7: scenarios.append("⚖️ If no external catalyst occurs → price may continue to consolidate sideways.")
+    if sentiment > 0.05 and pct_24h > 0: scenarios.append("🔄 Sentiment recovery in progress → sideways to slightly bullish expected.")
     return scenarios
 
 # =================================================================
-# 5) Full analyze_coin — your logic, unchanged except minor safety
+# 5) Full analyze_coin and UI logic
 # =================================================================
 def analyze_coin(coin_id: str,
                  coin_symbol: str,
@@ -1139,7 +1032,7 @@ def analyze_coin(coin_id: str,
     }
 
 # =================================================================
-# 6) Intent parser & pretty text (your original functions)
+# 6) User Input and Text Output (new)
 # =================================================================
 def parse_user_message(message: str) -> Dict:
     msg = message.lower()
@@ -1168,7 +1061,8 @@ def parse_user_message(message: str) -> Dict:
     else:
         if "week" in msg: horizon_days = 7
         if "month" in msg: horizon_days = 30
-    return {"coin_id": coin_id, "intent": intent, "horizon_days": horizon_days}
+    coin_info = next((c for c in DEFAULT_COINS if c["id"] == coin_id), DEFAULT_COINS[0])
+    return {"coin_id": coin_id, "coin_symbol": coin_info["symbol"], "intent": intent, "horizon_days": horizon_days}
 
 def _pick_insight_line(insight_text: str, label: str, fallback: str = "—") -> str:
     if not insight_text:
@@ -1268,10 +1162,10 @@ def make_pretty_output(result: Dict, horizon_days: int) -> str:
         return f"{label}: {val:+.4f} → {trend} ({hint})"
 
     for ln in [
-        comp_line("RSI",       "rsi_component",       "price momentum is improving",      "potential overbought/oversold", "balanced momentum"),
+        comp_line("RSI",       "rsi_component",       "price momentum is improving",     "potential overbought/oversold", "balanced momentum"),
         comp_line("Sentiment", "sentiment_component", "news sentiment is mildly positive","news sentiment is mildly negative","mixed/neutral news flow"),
-        comp_line("Mom24",     "mom24_component",     "24-hour momentum positive",        "flat 24-hour momentum",         "flat 24-hour momentum"),
-        comp_line("Mom7",      "mom7_component",      "7-day momentum uptrend",           "7-day momentum almost flat",    "flat 7-day momentum"),
+        comp_line("Mom24",     "mom24_component",     "24-hour momentum positive",       "flat 24-hour momentum",         "flat 24-hour momentum"),
+        comp_line("Mom7",      "mom7_component",      "7-day momentum uptrend",          "7-day momentum almost flat",    "flat 7-day momentum"),
     ]:
         if ln: risk_lines.append(ln)
 
@@ -1391,7 +1285,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
     # --- Derived ---
     liq_pct = (vol24 / mcap * 100.0) if (isinstance(mcap,(int,float)) and mcap>0 and isinstance(vol24,(int,float))) else None
-    c24_arrow = "📺" if (isinstance(c24,(int,float)) and c24 >= 0) else "📻"
+    c24_arrow = "🔼" if (isinstance(c24,(int,float)) and c24 >= 0) else "🔽"
     c24_color = "#2ecc71" if (isinstance(c24,(int,float)) and c24 >= 0) else "#e74c3c"
 
     # Recommendation cosmetics
@@ -1521,10 +1415,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
         if not risk_lines:
             st.write("• 🟢 No major risks detected")
 
-        # Adding a large amount of vertical space to fully occupy the column
-        for _ in range(15):
-            st.write("")
-            
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
@@ -1561,10 +1451,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
         else:
             st.write("• **RSI**: Data unavailable")
 
-        # Adding a large amount of vertical space to fully occupy the column
-        for _ in range(15):
-            st.write("")
-
         # === STRATEGY SECTION ===
         st.subheader("🧠 Strategy Signals")
         pos_pct = float(pcts.get("positive", 0.0))
@@ -1580,7 +1466,7 @@ def render_pretty_summary(result, horizon_days: int = 7):
 
         if scenarios:
             for scenario in scenarios[:3]:
-                clean_scenario = scenario.replace("🟡 ", "").replace("🟢 ", "").replace("📻 ", "").replace("⚖️ ", "").replace("🔥 ", "")
+                clean_scenario = scenario.replace("🟡 ", "").replace("🟢 ", "").replace("🔽 ", "").replace("⚖️ ", "").replace("🔄 ", "")
                 st.write(f"• {clean_scenario}")
         else:
             st.write("• Monitor for breakout signals")
@@ -1624,7 +1510,6 @@ def render_pretty_summary(result, horizon_days: int = 7):
                     pass
 
             if not combined.empty:
-                import altair as alt
                 df_plot = combined.copy()
 
                 try:
@@ -1686,11 +1571,11 @@ def build_single_response(user_message: str, session_id: str):
     parsed = parse_user_message(user_message)
     coin_id = parsed["coin_id"]
     horizon_days = parsed["horizon_days"]
-    coin_symbol = next((c["symbol"] for c in DEFAULT_COINS if c["id"] == coin_id), coin_id[:4])
+    coin_symbol = parsed["coin_symbol"]
 
     save_conversation(session_id, "user", user_message)
 
-    # Core analysis with GPT-3 insights
+    # Core analysis with Gemini insights
     result = analyze_coin(
         coin_id, coin_symbol,
         risk="Medium",
@@ -1705,65 +1590,9 @@ def build_single_response(user_message: str, session_id: str):
 
     pretty = make_pretty_output(result, horizon_days)
 
-    # Enhanced explainability with source info
     ex = result.get("explainability", {}) or {}
-    comps = ex.get("components", {}) or {}
-    friendly_ex = []
+    headlines_df = result.get("sentiment_table", pd.DataFrame())
     
-    # Add source information
-    insight_source = ex.get("insight_source", "unknown")
-    if insight_source == "gpt3":
-        friendly_ex.append("AI-powered insights generated using GPT-3")
-    elif insight_source == "fallback":
-        friendly_ex.append("Using rule-based analysis (GPT-3 unavailable)")
-    
-    total_score = comps.get("total_score")
-    if isinstance(total_score, (int, float)):
-        exam_score = int(round(50 + 50 * total_score))
-        exam_score = max(0, min(100, exam_score))
-        if exam_score >= 80:
-            mood_text = "very bullish"
-        elif exam_score >= 60:
-            mood_text = "slightly bullish"
-        elif exam_score >= 40:
-            mood_text = "neutral"
-        elif exam_score >= 20:
-            mood_text = "slightly bearish"
-        else:
-            mood_text = "very bearish"
-        friendly_ex.append(f"Score: {exam_score} -> {mood_text}")
-
-    def _describe_component(label, value, pos_hint, neg_hint):
-        if value > 0.02:
-            trend = "slightly bullish"
-            hint  = pos_hint
-        elif value < -0.02:
-            trend = "slightly bearish"
-            hint  = neg_hint
-        else:
-            trend = "neutral"
-            hint  = "balanced/flat"
-        return f"{label}: {value:+.4f} -> {trend} ({hint})"
-
-    if "rsi_component" in comps:
-        friendly_ex.append(_describe_component("RSI", comps["rsi_component"], "momentum improving", "risk of overbought/oversold"))
-    if "sentiment_component" in comps:
-        friendly_ex.append(_describe_component("Sentiment", comps["sentiment_component"], "news mildly positive", "news mildly negative"))
-    if "mom24_component" in comps:
-        friendly_ex.append(_describe_component("Mom24", comps["mom24_component"], "24h momentum positive", "24h momentum weak"))
-    if "mom7_component" in comps:
-        friendly_ex.append(_describe_component("Mom7", comps["mom7_component"], "7d momentum uptrend", "7d momentum flat/weak"))
-
-    friendly_ex_text = "\n".join(friendly_ex)
-
-    # Headlines text
-    if not result.get("sentiment_table", pd.DataFrame()).empty:
-        dfh = result["sentiment_table"]
-        headlines_text = "\n".join([f"{r['text']} -> {r['label']} ({r['score']:.2f})" for _, r in dfh.head(6).iterrows()])
-    else:
-        headlines_text = "\n".join([a.get("title", "") for a in result.get("articles", [])[:6]])
-
-    # Chart file
     chart_path = plot_history_forecasts_to_file(
         result.get("history", pd.DataFrame()),
         result.get("prophet_df", pd.DataFrame()),
@@ -1771,32 +1600,24 @@ def build_single_response(user_message: str, session_id: str):
         coin_id,
     )
 
-    save_conversation(session_id, "assistant", pretty, {"chart": chart_path, "explain_summary": friendly_ex_text})
-    save_conversation(session_id, "assistant", json.dumps(ex), {"explain_full": True})
+    save_conversation(session_id, "assistant", pretty, {"chart": chart_path})
 
-    return pretty, ex, headlines_text, chart_path, result
+    return pretty, ex, headlines_df, chart_path, result
 
 
 # =================================================================
-# 9) STREAMLIT APP (Summary-only UI, polished with Send below input)
+# 9) STREAMLIT APP (Main Layout)
 # =================================================================
 st.markdown("""
 <style>
 /* Overall spacing */
 .block-container { padding-top: 1.8rem; padding-bottom: 2.4rem; }
-
 /* Cards */
 .card { background: #0b1220; border: 1px solid #1f2a44; border-radius: 16px; padding: 16px 18px; }
 .card > h3, .card > h4 { margin-top: 0; }
-
 /* Buttons & chips */
 button[kind="primary"] { border-radius: 12px !important; }
-.chips span{
-  display:inline-block; padding:6px 10px; border-radius:999px; margin:4px 6px 0 0;
-  border:1px solid #233047; color:#dfe8ff; background:#0e1726; font-size:.88rem; cursor:pointer;
-}
-.chips span:hover{ background:#122038; }
-
+.stButton>button { width: 100%; }
 /* Headings */
 h1, h2, h3 { letter-spacing:.01em; }
 .app-title{ display:flex; align-items:center; gap:.6rem; }
@@ -1806,7 +1627,6 @@ h1, h2, h3 { letter-spacing:.01em; }
   font-size:1.1rem;
 }
 .app-subtitle{ color:#96a7bf; margin:-.15rem 0 1.1rem 0; }
-
 /* Info banner */
 .banner { background:#0e213a; border:1px solid #1c3357; color:#cfe3ff; border-radius:12px; padding:.9rem 1rem; }
 </style>
@@ -1815,7 +1635,7 @@ h1, h2, h3 { letter-spacing:.01em; }
 # ---- Header ------------------------------------------------------------------
 st.markdown(
     "<div class='app-title'>"
-    "<div class='logo'>💬</div>"
+    "<div class='logo'>📈</div>"
     "<h1 style='margin:0'>Crypto Agent</h1>"
     "</div>",
     unsafe_allow_html=True
@@ -1831,73 +1651,61 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "last_outputs" not in st.session_state:
     st.session_state.last_outputs = {
-        "pretty": "",
-        "ex": {},
-        "heads": "",
-        "chart": None,
         "result_for_ui": None,
         "horizon": 7,
     }
 
-# ---- Quick actions -----------------------------------------------------------
-with st.container():
-    colA, colB = st.columns([2, 3])
-    with colA:
-        st.markdown("##### Quick coins")
-        coins_html = "<div class='chips'>"
-        for c in DEFAULT_COINS:
-            q = f"{c['name']} {7}-day forecast"
-            coins_html += f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{q}'}}, '*')\">{c['name']}</span>"
-        coins_html += "</div>"
-        st.markdown(coins_html, unsafe_allow_html=True)
-
-    with colB:
-        st.markdown("##### Suggested prompts")
-        prompts = [
-            "ETH 7-day forecast",
-            "Should I buy BTC?",
-            "SOL sentiment and risks",
-            "ADA next week outlook",
-        ]
-        html = "<div class='chips'>" + "".join(
-            [f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{p}'}}, '*')\">{p}</span>" for p in prompts]
-        ) + "</div>"
-        st.markdown(html, unsafe_allow_html=True)
-
 # ---- Input card --------------------------------------------------------------
 with st.container():
-    st.markdown("<div class='card input-card'>", unsafe_allow_html=True)
-    st.markdown("**Your message**")
     user_message = st.text_input(
-        label="",
+        label="Your message",
         value="",
         placeholder="E.g. 'ETH 7-day forecast' or 'Should I buy BTC?'",
         key="user_text",
+        label_visibility="collapsed"
     )
-    # Send button moved BELOW input
-    send_clicked = st.button("Send", use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    send_clicked = st.button("Analyze", use_container_width=True, type="primary")
 
 # ---- Handle send -------------------------------------------------------------
 if send_clicked and user_message.strip():
-    pretty_text, full_ex, headlines_text, chart_path, result_obj = build_single_response(
-        user_message, st.session_state.session_id
-    )
-    st.session_state.last_outputs = {
-        "pretty": pretty_text,
-        "ex": full_ex or {},
-        "heads": headlines_text,
-        "chart": chart_path,
-        "result_for_ui": result_obj,
-        "horizon": parse_user_message(user_message)["horizon_days"],
-    }
+    with st.spinner("Analyzing... This may take a moment."):
+        pretty_text, full_ex, headlines_df, chart_path, result_obj = build_single_response(
+            user_message, st.session_state.session_id
+        )
+        st.session_state.last_outputs = {
+            "result_for_ui": result_obj,
+            "horizon": parse_user_message(user_message)["horizon_days"],
+        }
+        # Immediately re-run to update the display with the new state
+        st.experimental_rerun()
 
 # ---- Render summary or an empty state ----------------------------------------
 ui_result = st.session_state.last_outputs.get("result_for_ui")
 if ui_result:
-    render_pretty_summary(
-        ui_result,
-        horizon_days=st.session_state.last_outputs.get("horizon", 7),
-    )
+    # Use tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📊 Summary", "🔬 Explainability", "📰 Headlines"])
+
+    with tab1:
+        render_pretty_summary(
+            ui_result,
+            horizon_days=st.session_state.last_outputs.get("horizon", 7),
+        )
+    
+    with tab2:
+        st.subheader("🔬 Explainability Trace")
+        ex_data = ui_result.get("explainability", {})
+        if ex_data:
+            st.json(ex_data, expanded=True)
+        else:
+            st.info("No explainability data available.")
+            
+    with tab3:
+        st.subheader("📰 Recent Headlines & Sentiment")
+        df_headlines = ui_result.get("sentiment_table")
+        if df_headlines is not None and not df_headlines.empty:
+            st.dataframe(df_headlines, use_container_width=True)
+        else:
+            st.info("No headlines found.")
+
 else:
     st.markdown("<div class='banner'>Ask about a coin to generate the dashboard.</div>", unsafe_allow_html=True)
