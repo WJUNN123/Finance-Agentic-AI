@@ -652,7 +652,7 @@ def load_recent_session(session_id: str, limit: int = 20):
         return []
 
 # =================================================================
-# 2) Long-term memory (FAISS) — MODIFIED AND CORRECTED
+# 2) Long-term memory (FAISS) — CORRECTED
 # =================================================================
 EMB_MODEL = None
 FAISS_INDEX = None
@@ -663,7 +663,8 @@ def init_faiss(dim=None):
     if not EMB_AVAILABLE:
         return None, []
     if EMB_MODEL is None:
-        # THE FIX IS HERE: Explicitly set device to 'cpu'.
+        # ### THIS IS THE FIX ###
+        # Explicitly telling the model to load onto the CPU.
         EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
         
     dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
@@ -708,6 +709,7 @@ def add_long_term_item(text: str, meta: dict):
     if not EMB_AVAILABLE or FAISS_INDEX is None:
         return False
     if EMB_MODEL is None:
+        # Safeguard if init fails
         EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
         
     emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
