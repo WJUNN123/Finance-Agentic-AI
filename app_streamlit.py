@@ -740,21 +740,6 @@ def load_recent_session(session_id: str, limit: int = 20):
 # =================================================================
 # 2) Long-term memory (FAISS) — your code with safe guards
 # =================================================================
-try:
-    from sentence_transformers import SentenceTransformer
-    import faiss
-    EMB_AVAILABLE = True
-    print("Embeddings libraries loaded successfully")
-except Exception as e:
-    print(f"Embeddings not available: {e}")
-    EMB_AVAILABLE = False
-
-# Embeddings / FAISS paths
-FAISS_INDEX_PATH = "faiss.index"
-METADATA_STORE = "faiss_meta.json"
-EMB_MODEL_NAME = "all-MiniLM-L6-v2"
-
-# Initialize with better error handling
 EMB_MODEL = None
 FAISS_INDEX = None
 FAISS_META = []
@@ -762,69 +747,63 @@ FAISS_META = []
 def init_faiss(dim=None):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
     if not EMB_AVAILABLE:
-        print("Embeddings disabled - FAISS not available")
         return None, []
-        
+    
     try:
         if EMB_MODEL is None:
-            # Initialize with explicit device and error handling
+            # Add explicit device parameter to fix the NotImplementedError
             EMB_MODEL = SentenceTransformer(
-                EMB_MODEL_NAME,
-                device='cpu',  # Force CPU to avoid device issues
-                cache_folder=None
+                EMB_MODEL_NAME, 
+                device='cpu',
+                trust_remote_code=True
             )
-            print("SentenceTransformer model loaded successfully")
         
         dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
         
-        # Try to load existing index
         try:
             if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(METADATA_STORE):
                 index = faiss.read_index(FAISS_INDEX_PATH)
-                with open(METADATA_STORE, 'r') as f:
-                    metas = json.load(f)
+                metas = json.load(open(METADATA_STORE))
                 FAISS_INDEX = index
                 FAISS_META[:] = metas
-                print(f"Loaded existing FAISS index with {len(metas)} items")
                 return index, FAISS_META
-        except Exception as e:
-            print(f"Could not load existing index: {e}")
+        except Exception:
+            pass
         
-        # Create new index
         index = faiss.IndexFlatL2(dim_local)
         FAISS_INDEX = index
         FAISS_META = []
-        print("Created new FAISS index")
         return index, FAISS_META
-        
+    
     except Exception as e:
-        print(f"Failed to initialize FAISS: {e}")
-        # Disable embeddings if initialization fails
+        print(f"FAISS initialization failed: {e}")
+        # Disable embeddings on failure
         global EMB_AVAILABLE
         EMB_AVAILABLE = False
-        EMB_MODEL = None
-        FAISS_INDEX = None
-        FAISS_META = []
         return None, []
 
-# Safe initialization - don't crash if embeddings fail
 try:
     if EMB_AVAILABLE:
         init_faiss()
-        print("FAISS initialized successfully")
 except Exception as e:
-    print(f"Warning: FAISS initialization failed: {e}")
+    print(f"Warning: Embeddings disabled due to error: {e}")
     EMB_AVAILABLE = False
 
 def add_long_term_item(text: str, meta: dict):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
     if not EMB_AVAILABLE:
         return False
-    if EMB_MODEL is None:
-        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME)
-    emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
-    fid = len(FAISS_META)
+    
     try:
+        if EMB_MODEL is None:
+            EMB_MODEL = SentenceTransformer(
+                EMB_MODEL_NAME,
+                device='cpu',
+                trust_remote_code=True
+            )
+        
+        emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
+        fid = len(FAISS_META)
         FAISS_INDEX.add(emb)
         FAISS_META.append({"id": fid, "text": text, "meta": meta})
         faiss.write_index(FAISS_INDEX, FAISS_INDEX_PATH)
@@ -837,16 +816,17 @@ def add_long_term_item(text: str, meta: dict):
 def retrieve_similar(query: str, k: int=5):
     if not EMB_AVAILABLE or FAISS_INDEX is None or EMB_MODEL is None:
         return []
-    q_emb = EMB_MODEL.encode([query], convert_to_numpy=True).astype("float32")
+    
     try:
+        q_emb = EMB_MODEL.encode([query], convert_to_numpy=True).astype("float32")
         D, I = FAISS_INDEX.search(q_emb, min(k, FAISS_INDEX.ntotal))
+        results = []
+        for idx in I[0]:
+            if idx < len(FAISS_META):
+                results.append(FAISS_META[idx])
+        return results
     except Exception:
         return []
-    results = []
-    for idx in I[0]:
-        if idx < len(FAISS_META):
-            results.append(FAISS_META[idx])
-    return results
 
 # =================================================================
 # 3) Training helpers (your code)
