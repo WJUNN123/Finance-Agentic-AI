@@ -38,7 +38,7 @@ import altair as alt
 
 
 # ML / NLP libs
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModel
 from huggingface_hub import login as hf_login
 
 # Prophet
@@ -53,6 +53,7 @@ from sklearn.preprocessing import MinMaxScaler
 # Optional: sentence-transformers + faiss for embeddings and retrieval
 try:
     from sentence_transformers import SentenceTransformer
+    from sentence_transformers.models import Pooling
     import faiss
     EMB_AVAILABLE = True
 except Exception:
@@ -652,7 +653,7 @@ def load_recent_session(session_id: str, limit: int = 20):
         return []
 
 # =================================================================
-# 2) Long-term memory (FAISS) — CORRECTED
+# 2) Long-term memory (FAISS) — MODIFIED AND CORRECTED
 # =================================================================
 EMB_MODEL = None
 FAISS_INDEX = None
@@ -662,10 +663,21 @@ def init_faiss(dim=None):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
     if not EMB_AVAILABLE:
         return None, []
+        
     if EMB_MODEL is None:
-        # ### THIS IS THE FIX ###
-        # Explicitly telling the model to load onto the CPU.
-        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
+        try:
+            # NEW ROBUST METHOD: Manually load model components to bypass environment issues.
+            st.toast("Initializing embedding model...")
+            transformer_model = AutoModel.from_pretrained(EMB_MODEL_NAME)
+            pooling_model = Pooling(transformer_model.get_word_embedding_dimension())
+            EMB_MODEL = SentenceTransformer(modules=[transformer_model, pooling_model], device='cpu')
+            st.toast("✅ Embedding model ready.")
+        except Exception as e:
+            st.error(f"Fatal Error: Could not initialize SentenceTransformer model. {e}")
+            # If this fails, the app can't use embeddings.
+            global EMB_AVAILABLE
+            EMB_AVAILABLE = False
+            return None, []
         
     dim_local = EMB_MODEL.get_sentence_embedding_dimension() if dim is None else dim
     try:
@@ -675,7 +687,6 @@ def init_faiss(dim=None):
                 metas = json.load(f)
             FAISS_INDEX = index
             FAISS_META[:] = metas
-            st.toast("✅ Loaded long-term memory from disk.")
             return index, FAISS_META
     except Exception as e:
         st.warning(f"⚠️ Could not load FAISS memory: {e}. Creating a new one.")
@@ -706,12 +717,8 @@ if EMB_AVAILABLE:
 
 def add_long_term_item(text: str, meta: dict):
     global EMB_MODEL, FAISS_INDEX, FAISS_META
-    if not EMB_AVAILABLE or FAISS_INDEX is None:
+    if not EMB_AVAILABLE or FAISS_INDEX is None or EMB_MODEL is None:
         return False
-    if EMB_MODEL is None:
-        # Safeguard if init fails
-        EMB_MODEL = SentenceTransformer(EMB_MODEL_NAME, device='cpu')
-        
     emb = EMB_MODEL.encode([text], convert_to_numpy=True).astype("float32")
     fid = len(FAISS_META)
     try:
