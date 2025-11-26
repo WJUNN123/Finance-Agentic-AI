@@ -1079,8 +1079,14 @@ def _sentiment_bar(pos, neu, neg, width_blocks=20):
     return "🟩"*pb + "⬜"*(nb) + "🟥"*rb
 
 def render_pretty_summary(ui_result: Dict, horizon_days: int):
+    # === FIX START: Defensive check for coin_id ===
+    coin_id = ui_result.get("coin_id")
+    if not coin_id:
+        st.error("Error: Analysis result object is missing the coin identifier. Please try a different query.")
+        return
+    # === FIX END ===
+
     # Unpack core data for UI display
-    coin_id = ui_result["coin_id"]
     rec = ui_result["recommendation"]
     price = ui_result["price"]
     c24 = ui_result["pct_24h"]
@@ -1382,7 +1388,6 @@ def build_single_response(user_message: str, session_id: str):
     # Core analysis with GPT-3 insights
     result = analyze_and_forecast(coin_id, coin_symbol, horizon_days, user_message)
     
-    # === FIX START ===
     # Check for error immediately after analysis and exit gracefully before accessing other keys
     if "error" in result:
         # Save error message to short-term memory
@@ -1390,7 +1395,6 @@ def build_single_response(user_message: str, session_id: str):
         save_conversation(session_id, "assistant", error_msg, {})
         # Return error details to the Streamlit loop
         return error_msg, {}, "", None, result
-    # === FIX END ===
     
     # Get components for structured output
     agg_sent = result.get("agg_sent", 0.0)
