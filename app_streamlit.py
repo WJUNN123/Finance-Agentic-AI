@@ -819,45 +819,40 @@ def collect_training_data(coin_id, lookback_days=180, horizon=7):
 def retrain_lstm_for_coin(coin_id, epochs=5):
     X, y = collect_training_data(coin_id)
     if X is None:
-        return False, "Not enough data"
-    model = build_lstm_model((LSTM_WINDOW, 1))
-    model.fit(X, y, epochs=epochs, batch_size=32, validation_split=0.1, verbose=1)
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    path = os.path.join(MODEL_DIR, f"lstm_{coin_id}_{ts}.h5")
-    model.save(path)
-    if joblib:
-        joblib.dump({"coin": coin_id, "saved_at": ts, "shape": X.shape}, path + ".meta.pkl")
-    return True, path
+        return False
+    # Data scaling for price-based training (different from log-return training)
+    scaler_y = MinMaxScaler(feature_range=(0, 1))
+    y_scaled = scaler_y.fit_transform(y.reshape(-1, 1))
+    X_scaled = scaler_y.transform(X.reshape(-1, 1)).reshape(X.shape)
+    
+    split = int(len(X_scaled) * 0.9)
+    X_train, X_val = X_scaled[:split], X_scaled[split:]
+    y_train, y_val = y_scaled[:split], y_scaled[split:]
+    
+    model = build_lstm_model(input_shape=(LSTM_WINDOW, 1))
+    es = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
+    model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=epochs, batch_size=LSTM_BATCH, callbacks=[es], verbose=0)
+    
+    model.save(os.path.join(MODEL_DIR, f"lstm_{coin_id}.h5"))
+    joblib.dump(scaler_y, os.path.join(MODEL_DIR, f"scaler_lstm_{coin_id}.pkl"))
+    
+    return True
 
 # =================================================================
-# 4) Planner + Explainability (your code)
+# 4) Explainability helpers
 # =================================================================
-def rule_based_plan(market, sentiment_score_val, rsi, risk="medium", horizon_days=7):
-    steps = []
-    steps.append("Step 0: Monitor price and headlines every 1 hour for the next 24h.")
-    if not (isinstance(rsi, float) and math.isnan(rsi)) and rsi < 30 and sentiment_score_val > 0.2:
-        steps.append("Step 1: Condition met (RSI < 30 AND sentiment positive). Consider opening small position; set stop-loss at -4% and target +8%.")
-    elif sentiment_score_val < -0.2 and (not (isinstance(rsi, float) and math.isnan(rsi)) and rsi > 65):
-        steps.append("Step 1: Negative sentiment and high RSI → consider reducing exposure or delaying new buys.")
-    else:
-        steps.append("Step 1: No immediate action recommended. Wait for clearer signal (RSI breach or sentiment change).")
-    steps.append("Step 2: If a position is opened, use trailing stop of 3% and move stop to breakeven after +6% gain.")
-    steps.append("Step 3: Log decisions and outcomes to long-term memory for continual learning.")
-    return steps
-
-def llm_plan_stub(context_text: str):
-    return ["LLM Step 1: Evaluate immediate headlines and order book.", "LLM Step 2: Provide actionable thresholds (user define)."]
-
 def scale_ex(x, lo, hi):
+    """Scale a value from [lo, hi] to [-1, 1] for explainability contribution."""
     try:
-        return max(-1.0, min(1.0, (float(x) - lo) / (hi - lo) * 2 - 1))
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return 0.0
+        return max(-1.0, min(1.0, ((x - lo) / (hi - lo) * 2 - 1)))
     except Exception:
         return 0.0
 
 def explain_trace_components(agg_sent, pct_24h, pct_7d, rsi):
     mom24 = scale_ex(pct_24h, -15, 15)
-    mom7  = scale_ex(pct_7d, -40, 40)
-
+    mom7 = scale_ex(pct_7d, -40, 40)
     rsi_dev = 0.0
     if not (isinstance(rsi, float) and math.isnan(rsi)):
         if rsi >= 70:
@@ -866,262 +861,52 @@ def explain_trace_components(agg_sent, pct_24h, pct_7d, rsi):
             rsi_dev = 1.0
         else:
             rsi_dev = (50 - rsi) / 20.0
-
+            
     weights = {"w_sent": 0.45, "w_m24": 0.2, "w_m7": 0.2, "w_rsi": 0.15}
-
     comp = {
         "sentiment_component": float(weights["w_sent"] * agg_sent),
         "mom24_component": float(weights["w_m24"] * mom24),
         "mom7_component": float(weights["w_m7"] * mom7),
         "rsi_component": float(weights["w_rsi"] * rsi_dev),
     }
-
     comp["total_score"] = sum(comp.values())
     return comp, weights
 
 def generate_scenarios(sentiment: float, rsi: float, pct_24h: float, pct_7d: float) -> List[str]:
     scenarios = []
-
-    if sentiment < -0.2:
-        scenarios.append("🟡 If the Fed signals a pause or rate cut next month → possible bullish reversal.")
-
+    
+    # Positive sentiment + price dip
+    if sentiment > 0.3 and pct_24h < -2:
+        scenarios.append("🟢 Strong sentiment with a minor dip → potential 'buy the dip' opportunity.")
+        
+    # High negative sentiment
+    if sentiment < -0.4:
+        scenarios.append("🔴 Major negative sentiment → high probability of further downside in the short term.")
+        
+    # Oversold/Overbought signals
     if rsi <= 35:
         scenarios.append("🟢 RSI is nearing oversold territory → short-term bounce likely (watch for reversal).")
+    elif rsi >= 70:
+        scenarios.append("🔴 RSI is heavily overbought → expect a pullback or period of consolidation soon.")
 
-    if pct_7d < -8:
-        scenarios.append("🔻 If price breaks below weekly support → 5–10% downside risk.")
-
-    if -0.15 < sentiment < 0.15 and -7 < pct_24h < 7:
-        scenarios.append("⚖️ If no external catalyst occurs → price may continue to consolidate sideways.")
-
-    if sentiment > 0.05 and pct_24h > 0:
-        scenarios.append("🔄 Sentiment recovery in progress → sideways to slightly bullish expected.")
+    # Strong weekly trend
+    if pct_7d > 20:
+        scenarios.append("🟡 Extreme 7-day run-up → profit-taking and volatility are major risks now.")
+        
+    # Regulatory risk (example - can be improved by checking headlines)
+    if "regulat" in st.session_state.last_outputs.get("pretty", ""):
+        scenarios.append("⚠️ Regulatory news present → market uncertainty increases; adjust stop-loss orders.")
 
     return scenarios
 
 # =================================================================
-# 5) Full analyze_coin — your logic, unchanged except minor safety
-# =================================================================
-def analyze_coin(coin_id: str,
-                 coin_symbol: str,
-                 risk: str,
-                 horizon_days: int,
-                 custom_note: str = "",
-                 forecast_days: int = 7,
-                 model_choice: str = "ensemble"):
-    try:
-        mkt = coingecko_market([coin_id])
-    except Exception as e:
-        return {"error": f"Market data failed: {e}"}
-    if mkt.empty:
-        return {"error": f"No market data for {coin_id}"}
-    row = mkt.iloc[0]
-    price = float(row.get("current_price", float("nan")))
-    pct_24h = row.get("price_change_percentage_24h", float("nan"))
-    pct_7d = row.get("price_change_percentage_7d_in_currency", row.get("price_change_percentage_7d", float("nan")))
-    hist = coingecko_chart(coin_id, days=180)
-    rsi = compute_rsi(hist["price"]) if (not hist.empty and "price" in hist.columns) else float("nan")
-    market_cap = float(row.get("market_cap", float("nan")))
-    volume_24h = float(row.get("total_volume", float("nan")))
-
-    arts_symbol = fetch_rss_articles(coin_symbol)
-    arts_name = fetch_rss_articles(coin_id)
-    articles = {a["title"]: a for a in (arts_symbol + arts_name)}
-    articles = list(articles.values())
-    headlines = [a["title"] for a in articles]
-
-    try:
-        analyses = run_finbert(headlines) if headlines else []
-    except Exception as e:
-        return {"error": f"FinBERT error: {e}"}
-    agg_sent, df_sent = sentiment_score(analyses)
-    sentiment_pcts = sentiment_percentages(analyses)
-
-    # Get top headlines for GPT context
-    top_headlines = headlines[:5] if headlines else []
-
-    prophet_df, prophet_summary = pd.DataFrame(), {}
-    lstm_preds = []
-    if model_choice.lower() in ("prophet", "ensemble"):
-        try:
-            prophet_df, prophet_summary = forecast_with_prophet(hist["price"] if (not hist.empty and "price" in hist.columns) else pd.Series(), days=forecast_days)
-        except Exception:
-            prophet_df, prophet_summary = pd.DataFrame(), {}
-    if model_choice.lower() in ("lstm", "ensemble"):
-        try:
-            lstm_preds = train_and_forecast_lstm(hist["price"] if (not hist.empty and "price" in hist.columns) else pd.Series(), horizon=forecast_days, window=LSTM_WINDOW, epochs=LSTM_EPOCHS)
-        except Exception:
-            lstm_preds = []
-
-    # Build forecast table
-    forecast_table = []
-    last_date = hist.index[-1] if (hist is not None and not hist.empty) else None
-    for i in range(forecast_days):
-        day = i + 1
-        date = (last_date + pd.Timedelta(days=day)) if last_date is not None else None
-        prophet_val = None
-        try:
-            if (prophet_df is not None) and (not prophet_df.empty):
-                future_rows = prophet_df.tail(forecast_days).reset_index(drop=True)
-                if i < len(future_rows):
-                    prophet_val = float(future_rows.loc[i, "yhat"])
-        except Exception:
-            prophet_val = None
-        lstm_val = None
-        try:
-            if lstm_preds and i < len(lstm_preds):
-                lstm_val = float(lstm_preds[i])
-        except Exception:
-            lstm_val = None
-        ensemble_val = None
-        if (prophet_val is not None) and (lstm_val is not None):
-            ensemble_val = float(0.3 * prophet_val + 0.7 * lstm_val)
-        elif lstm_val is not None:
-            ensemble_val = float(lstm_val)
-        elif prophet_val is not None:
-            ensemble_val = float(prophet_val)
-        forecast_table.append({
-            "day": day,
-            "date": date,
-            "prophet": prophet_val,
-            "lstm": lstm_val,
-            "ensemble": ensemble_val
-        })
-    last_prediction = None
-    if forecast_table:
-        last_row = forecast_table[-1]
-        last_prediction = last_row.get("ensemble") if last_row.get("ensemble") is not None else (last_row.get("prophet") or last_row.get("lstm"))
-
-    # Generate forecast note
-    forecast_note = ""
-    try:
-        if forecast_table and isinstance(price, (int, float)) and price > 0:
-            fc_vals = [r.get("ensemble") or r.get("prophet") or r.get("lstm") for r in forecast_table if r]
-            if fc_vals and (fc_vals[-1] is not None):
-                fc_7d = 100.0 * (float(fc_vals[-1]) - float(price)) / float(price)
-                if (fc_7d < 0) and isinstance(rsi, (int, float)) and rsi < 35:
-                    forecast_note = (
-                        "Forecast expects mild drift lower, but RSI is near oversold—"
-                        "a short-term bounce is possible. HOLD / WAIT is prudent."
-                    )
-                elif (fc_7d > 0) and isinstance(rsi, (int, float)) and rsi > 70:
-                    forecast_note = (
-                        "Forecast points upward, but RSI is near overbought—"
-                        "pullback risk is elevated. Consider caution on entries."
-                    )
-    except Exception:
-        pass
-
-    # *** MAIN CHANGE: Use GPT-3 for recommendation and insights ***
-    rec = call_gpt3_for_insight(
-        coin_id=coin_id,
-        coin_symbol=coin_symbol,
-        sentiment=agg_sent,
-        pct_24h=pct_24h,
-        pct_7d=pct_7d,
-        rsi=rsi,
-        price=price,
-        market_cap=market_cap,
-        volume_24h=volume_24h,
-        risk=risk,
-        horizon_days=horizon_days,
-        top_headlines=top_headlines,
-        forecast_note=forecast_note
-    )
-
-    # Monte-Carlo uncertainty band
-    mc_mean, mc_lo, mc_hi = [], [], []
-    try:
-        if hist is not None and not hist.empty and "price" in hist.columns and lstm_preds:
-            hist_prices = hist["price"].astype(float)
-            p0 = float(hist_prices.iloc[-1])
-
-            logrets = np.log(hist_prices).diff().dropna()
-            if not logrets.empty:
-                sig = float(logrets.ewm(span=20, adjust=False).std().iloc[-1])
-            else:
-                sig = 0.0
-            sig = 0.0 if (isinstance(sig, float) and (math.isnan(sig) or sig < 1e-9)) else sig
-
-            drift = np.diff(np.log([p0] + list(lstm_preds)))
-            horizon = len(lstm_preds)
-            if len(drift) < horizon and len(drift) > 0:
-                drift = np.pad(drift, (0, horizon - len(drift)), mode="edge")
-
-            rng = np.random.default_rng(42)
-            n_paths = 50
-            sims = []
-            for _ in range(n_paths):
-                noise = rng.normal(0.0, sig, size=horizon) * 0.6
-                rets = drift + noise
-                path = p0 * np.exp(np.cumsum(rets))
-                sims.append(path)
-            sims = np.array(sims)
-            mc_mean = sims.mean(axis=0).tolist()
-            mc_lo   = np.percentile(sims, 25, axis=0).tolist()
-            mc_hi   = np.percentile(sims, 75, axis=0).tolist()
-    except Exception:
-        mc_mean, mc_lo, mc_hi = [], [], []
-
-    # Memory & retrieval
-    try:
-        mem_text = f"{coin_id} snapshot {datetime.utcnow().isoformat()}: price {price}, 24h {pct_24h}, sentiment {agg_sent:.3f}"
-        add_long_term_item(mem_text, {"price": price, "pct24": pct_24h, "sent": agg_sent})
-    except Exception:
-        pass
-    try:
-        similar = retrieve_similar(f"{coin_id} {' '.join(headlines[:3])}", k=3)
-    except Exception:
-        similar = []
-
-    comp, weights = explain_trace_components(agg_sent, pct_24h, pct_7d, rsi)
-    explain_trace = {
-        "weights": weights,
-        "components": comp,
-        "similar_events": similar,
-        "top_headlines": df_sent.head(3).to_dict(orient="records") if not df_sent.empty else [],
-        "insight_source": rec.get("source", "unknown")  # Track GPT vs fallback
-    }
-
-    if not df_sent.empty:
-        df_sent["published"] = [next((a["published_h"] for a in articles if a["title"] == t), "-") for t in df_sent["text"]]
-        df_sent["link"] = [next((a["link"] for a in articles if a["title"] == t), "-") for t in df_sent["text"]]
-
-    return {
-        "market": {
-            "coin": coin_id,
-            "symbol": coin_symbol.upper(),
-            "price_usd": price,
-            "pct_change_24h": pct_24h,
-            "pct_change_7d": pct_7d,
-            "rsi_14": rsi,
-            "market_cap": market_cap,
-            "volume_24h": volume_24h
-        },
-        "history": hist,
-        "articles": articles,
-        "sentiment_table": df_sent,
-        "sentiment_score": agg_sent,
-        "sentiment_percentages": sentiment_pcts,
-        "recommendation": rec,  # Now generated by GPT-3
-        "prophet_df": prophet_df,
-        "prophet_summary": prophet_summary,
-        "lstm_preds": lstm_preds,
-        "forecast_table": forecast_table,
-        "last_prediction": last_prediction,
-        "explainability": explain_trace,
-        "mc_mean": mc_mean,
-        "mc_lo": mc_lo,
-        "mc_hi": mc_hi,
-        "forecast_note": forecast_note,
-    }
-
-# =================================================================
-# 6) Intent parser & pretty text (your original functions)
+# 5) Message parsing
 # =================================================================
 def parse_user_message(message: str) -> Dict:
     msg = message.lower()
     coin_id = None
+    
+    # Try to match coin ID or symbol
     for name, cid in COIN_NAME_TO_ID.items():
         if name in msg:
             coin_id = cid; break
@@ -1129,8 +914,10 @@ def parse_user_message(message: str) -> Dict:
         for sym, cid in COIN_SYMBOL_TO_ID.items():
             if re.search(r'\b' + re.escape(sym) + r'\b', msg):
                 coin_id = cid; break
+    
     if coin_id is None:
-        coin_id = "bitcoin"
+        coin_id = "bitcoin"  # Default to Bitcoin
+        
     intent = "general"
     if any(w in msg for w in ["buy", "should i buy", "can i buy", "buy now", "position"]):
         intent = "advice"
@@ -1140,18 +927,27 @@ def parse_user_message(message: str) -> Dict:
         intent = "sentiment"
     elif any(w in msg for w in ["price", "current price", "how much is"]):
         intent = "price"
+
     horizon_days = 7
     m = re.search(r'(\d+)\s*(day|days|d)\b', msg)
-    if m: horizon_days = int(m.group(1))
+    if m:
+        horizon_days = int(m.group(1))
     else:
-        if "week" in msg: horizon_days = 7
-        if "month" in msg: horizon_days = 30
+        if "week" in msg:
+            horizon_days = 7
+        if "month" in msg:
+            horizon_days = 30
+            
     return {"coin_id": coin_id, "intent": intent, "horizon_days": horizon_days}
 
+# =================================================================
+# 6) Pretty output formatter
+# =================================================================
 def _pick_insight_line(insight_text: str, label: str, fallback: str = "—") -> str:
-    if not insight_text:
-        return fallback
+    if not insight_text: return fallback
     lines = [ln.strip() for ln in insight_text.splitlines() if ln.strip()]
+    
+    # Look for **LABEL** or LABEL: lines
     patterns = [
         rf"^\*\*{re.escape(label)}\*\*\s*:?\s*(.+)$",
         rf"^{re.escape(label)}\s*:?\s*(.+)$",
@@ -1160,164 +956,105 @@ def _pick_insight_line(insight_text: str, label: str, fallback: str = "—") -> 
         for pat in patterns:
             m = re.match(pat, ln, flags=re.IGNORECASE)
             if m:
+                # Return the whole line for context
                 return ln
     return fallback
 
-def make_pretty_output(result: Dict, horizon_days: int) -> str:
-    # (your original condensed text builder; unchanged)
-    market = result["market"]
-    pcts = result.get("sentiment_percentages", {})
+def make_pretty_output(result: Dict, comps: Dict, vol: float, mc: float, horizon_days: int) -> str:
+    
+    # Unpack core data
+    coin_id = result["coin_id"]
+    coin_symbol = result["coin_symbol"]
     rec = result["recommendation"]
-    ft = result.get("forecast_table", [])
-    ex = result.get("explainability", {})
-    comps = ex.get("components", {})
-
-    sym = f"{market['coin'].capitalize()} ({market['symbol']})"
-    price_str = f"${market['price_usd']:,.2f}"
-    c24 = market.get("pct_change_24h", float("nan"))
-    c7  = market.get("pct_change_7d", float("nan"))
-    rsi = market.get("rsi_14", float("nan"))
-
-    mc  = market.get("market_cap", float("nan"))
-    vol = market.get("volume_24h", market.get("total_volume", float("nan")))
-    mcs  = "NA" if (mc is None or (isinstance(mc, float) and math.isnan(mc))) else f"${mc:,.0f}"
-    vols = "NA" if (vol is None or (isinstance(vol, float) and math.isnan(vol))) else f"${vol:,.0f}"
-
-    c24s = "NA" if (c24 is None or (isinstance(c24, float) and math.isnan(c24))) else f"{c24:.2f}%"
-    c7s  = "NA" if (c7  is None or (isinstance(c7,  float) and math.isnan(c7)))  else f"{c7:.2f}%"
-    rsis = "NA" if (rsi is None or (isinstance(rsi, float) and math.isnan(rsi))) else f"{rsi:.1f}"
-
-    s_pos = float(pcts.get("positive", 0.0))
-    s_neu = float(pcts.get("neutral", 0.0))
-    s_neg = float(pcts.get("negative", 0.0))
-
-    ft_lines = []
-    for row in ft[:horizon_days]:
-        d = row.get("date")
-        dstr = d.strftime("%Y-%m-%d") if d else "-"
-        ens = row.get("ensemble")
-        ens_s = f"{ens:,.2f}" if ens is not None else "-"
-        ft_lines.append(f"Day +{row['day']} ({dstr}): {ens_s}")
-    ft_text = "\n".join(ft_lines) if ft_lines else "No forecast available."
-
-    sim_score = (s_pos - s_neg) / 100.0
-    scenarios = generate_scenarios(sim_score, rsi, c24, c7)
-    scenario_text = "\n".join([f"👉 {s}" for s in scenarios]) if scenarios else "No active strategic signals."
-
-    risk_lines = ["⚠️ Risk Disclosure"]
-    try:
-        if (isinstance(vol, (int, float)) and isinstance(mc, (int, float))
-            and not math.isnan(vol) and not math.isnan(mc) and mc > 0):
-            liq_pct = 100.0 * vol / mc
-            risk_lines.append(f"Liquidity Risk: 24h volume is {liq_pct:.2f}% of market cap (thin order book risk).")
-    except Exception:
-        pass
-    try:
-        arts = result.get("articles", [])
-        titles_blob = " ".join([a.get("title", "") for a in arts])[:3000]
-        if re.search(r"\b(sec|regulat|ban|lawsuit|fine|enforcement|probe|review)\b", titles_blob, re.I):
-            risk_lines.append("Regulatory Risk: Recent headlines reference regulatory actions or reviews.")
-    except Exception:
-        pass
-    total_score = comps.get("total_score", None)
-    if total_score is not None:
-        exam_score = int(round(50 + 50 * float(total_score)))
-        exam_score = max(0, min(100, exam_score))
-        mood = ("very bullish 📈" if exam_score >= 80 else
-                "slightly bullish 📈" if exam_score >= 60 else
-                "neutral ⚖️"        if exam_score >= 40 else
-                "slightly bearish 📉" if exam_score >= 20 else
-                "very bearish 📉")
-        risk_lines.append(f"Score: {exam_score} → {mood}")
-
+    c24 = result["pct_24h"]
+    c7 = result["pct_7d"]
+    rsi = result["rsi"]
+    price = result["price"]
+    
+    # General status
+    rec_label = rec.get("rating", "HOLD / WAIT")
+    rec_emoji = "🟢" if "BUY" in rec_label else ("🔴" if "SELL" in rec_label else "🟡")
+    
+    top_block = "\n".join([
+        f"# {rec_emoji} {rec_label} {coin_id.capitalize()} ({coin_symbol.upper()})",
+        f"**Current Price**: ${price:,.2f} USD",
+        f"**Analysis Horizon**: {horizon_days} Days",
+    ])
+    
+    # --- Sentiment Block ---
+    pcts = result["sentiment_pcts"]
+    s_pos = pcts.get("positive", 0.0)
+    s_neu = pcts.get("neutral", 0.0)
+    s_neg = pcts.get("negative", 0.0)
+    
+    sentiment_lines = [
+        f"**Aggregate Sentiment Score**: {result['agg_sent']:.3f} (Range -1 to +1)",
+        f"**News Polarity**: {s_pos:.1f}% Positive | {s_neu:.1f}% Neutral | {s_neg:.1f}% Negative",
+        f"**Gemini Sentiment Interpretation**: {_pick_insight_line(rec['insight'], 'Sentiment analysis interpretation')}",
+    ]
+    sentiment_block = "\n".join(["📰 News & Sentiment Analysis", "", *sentiment_lines])
+    
+    # --- Explainability / Momentum Block ---
     def comp_line(label, key, meaning_pos, meaning_neg, neutral_hint):
         val = comps.get(key, None)
-        if val is None:
-            return None
-        if val > 0.02:
-            trend = "slightly bullish"
-            hint  = meaning_pos
-        elif val < -0.02:
-            trend = "slightly bearish"
-            hint  = meaning_neg
-        else:
-            trend = "neutral"
-            hint  = neutral_hint
-        return f"{label}: {val:+.4f} → {trend} ({hint})"
+        if val is None: return f"**{label}**: N/A"
+        sign = "🟢" if val >= 0.05 else ("🔴" if val <= -0.05 else "🟡")
+        meaning = (meaning_pos if val > 0 else meaning_neg) if abs(val) >= 0.05 else neutral_hint
+        score_pct = int(abs(val) * 100)
+        return f"**{label}**: {sign} {meaning} ({score_pct}% impact)"
 
-    for ln in [
-        comp_line("RSI",       "rsi_component",       "price momentum is improving",      "potential overbought/oversold", "balanced momentum"),
-        comp_line("Sentiment", "sentiment_component", "news sentiment is mildly positive","news sentiment is mildly negative","mixed/neutral news flow"),
-        comp_line("Mom24",     "mom24_component",     "24-hour momentum positive",        "flat 24-hour momentum",         "flat 24-hour momentum"),
-        comp_line("Mom7",      "mom7_component",      "7-day momentum uptrend",           "7-day momentum almost flat",    "flat 7-day momentum"),
-    ]:
-        if ln: risk_lines.append(ln)
+    m24_line = comp_line("24h Momentum", "mom24_component", "Strong gain", "Significant drop", "Sideways movement")
+    m7_line = comp_line("7d Momentum", "mom7_component", "Strong weekly uptrend", "Strong weekly downtrend", "Consolidation")
+    rsi_line = comp_line("RSI (14) Mean Reversion", "rsi_component", "Oversold bounce likely", "Overbought pullback likely", "Neutral zone (50)")
 
-    risk_block = "\n".join(risk_lines)
-
-    insight_text = rec.get("insight", "").strip()
-    sent_line  = _pick_insight_line(insight_text, "Sentiment", "—")
-    m24_line   = _pick_insight_line(insight_text, "24-hour Momentum", "—")
-    m7_line    = _pick_insight_line(insight_text, "7-day Momentum", "—")
-    rsi_line   = _pick_insight_line(insight_text, "RSI (14)", "—")
-
-    top_block = "\n".join([
-        f"📊 {sym}",
-        "",
-        f"💵 Price: {price_str}",
-        f"🏦 Market Cap: {mcs}",
-        f"📊 24h Volume: {vols}",
-        f"📈 Changes: 24h → {c24s} | 7d → {c7s}",
-        f"📊 RSI(14): {rsis}",
-    ])
-
-    sentiment_block = "\n".join([
-        "📰 Sentiment & Recommendation",
-        "",
-        f"Sentiment: Positive {s_pos:.1f}% | Neutral {s_neu:.1f}% | Negative {s_neg:.1f}%",
-        "",
-        f"Recommendation: {rec['rating']}",
-        "",
-        "Insight:",
-        sent_line,
-        "",
-        m24_line,
-        "",
-        m7_line,
-        "",
-        rsi_line,
-    ])
-
-    momentum_block = "\n".join([
-        "📈 Momentum & RSI Analysis",
-        "",
-        f"24h Momentum: {m24_line.replace('**', '')}",
-        "",
-        f"7-day Momentum: {m7_line.replace('**', '')}",
-        "",
-        f"RSI (14): {rsi_line.replace('**', '')}",
+    risk_block = "\n".join([
+        f"⚠️ Risk Factors & Strategy (Score: **{int(round(50 + 50 * comps.get('total_score', 0)))}/100**)",
+        f"**Gemini Risk Analysis**: {_pick_insight_line(rec['insight'], 'Risk factors to consider')}",
     ])
 
     strategy_block = "\n".join([
         "🧠 Strategy Simulation (What-If Scenarios)",
+        f"**Gemini Key Catalysts**: {_pick_insight_line(rec['insight'], 'Key catalysts to watch')}",
         "",
-        scenario_text
+        *generate_scenarios(result['agg_sent'], rsi, c24, c7)
     ])
-
+    
+    # --- Forecast Block ---
+    ft = result["forecast_table"]
+    ft_lines = []
+    if ft:
+        last_pred = ft[-1]
+        p_last = last_pred.get("ensemble_val") or last_pred.get("lstm_val") or last_pred.get("prophet_val")
+        p_upper = result.get("prophet_summary", {}).get("upper")
+        p_lower = result.get("prophet_summary", {}).get("lower")
+        
+        if p_last is not None:
+            forecast_note = f"**{horizon_days}-Day Target**: **${p_last:,.2f}**"
+            if p_upper and p_lower and abs(p_upper - p_lower) / p_last > 0.01:
+                forecast_note += f" (Range ${p_lower:,.2f} - ${p_upper:,.2f})"
+            ft_lines.append(forecast_note)
+            
+            p_initial = result.get("price")
+            if p_initial is not None:
+                p_change = ((p_last - p_initial) / p_initial) * 100
+                ft_lines.append(f"**Predicted Change**: {p_change:+.2f}%")
+    
+    ft_text = "\n".join(ft_lines) if ft_lines else "No forecast available."
+    
     forecast_block = "\n".join([
         f"🔮 Price Forecast ({horizon_days}-Day)",
         "",
-        ft_text
+        ft_text,
     ])
-
+    
     output = "\n\n".join([
-        top_block,
+        top_block, 
         sentiment_block,
-        momentum_block,
         risk_block,
         strategy_block,
         forecast_block
     ])
+    
     return output
 
 # =================================================================
@@ -1327,8 +1064,8 @@ def _fmt_money(n):
     if n is None or (isinstance(n, float) and math.isnan(n)): return "—"
     a = abs(n)
     if a >= 1_000_000_000_000: return f"${n/1_000_000_000_000:.2f}T"
-    if a >= 1_000_000_000:     return f"${n/1_000_000_000:.2f}B"
-    if a >= 1_000_000:         return f"${n/1_000_000:.2f}M"
+    if a >= 1_000_000_000: return f"${n/1_000_000_000:.2f}B"
+    if a >= 1_000_000: return f"${n/1_000_000:.2f}M"
     return f"${n:,.2f}"
 
 def _rsi_zone(v):
@@ -1339,56 +1076,43 @@ def _sentiment_bar(pos, neu, neg, width_blocks=20):
     pb = int(round(width_blocks * (pos/100.0)))
     nb = int(round(width_blocks * (neu/100.0)))
     rb = max(0, width_blocks - pb - nb)
-    return "🟩"*pb + "⬜"*nb + "🟥"*rb
+    return "🟩"*pb + "⬜"*(nb) + "🟥"*rb
 
-def _rec_style(rating: str):
-    txt = (rating or "").lower()
-    if "buy" in txt:
-        return ("BUY", "🟢", "#16a34a")
-    if "sell" in txt or "avoid" in txt:
-        return ("SELL / AVOID", "🔴", "#ef4444")
-    return ("HOLD / WAIT", "🟡", "#f59e0b")
+def render_pretty_summary(ui_result: Dict, horizon_days: int):
+    # Unpack core data for UI display
+    coin_id = ui_result["coin_id"]
+    rec = ui_result["recommendation"]
+    price = ui_result["price"]
+    c24 = ui_result["pct_24h"]
+    c7 = ui_result["pct_7d"]
+    rsi = ui_result["rsi"]
+    mcap = ui_result["market_cap"]
+    vol24 = ui_result["volume_24h"]
+    pcts = ui_result["sentiment_pcts"]
+    vol = ui_result.get("volume_24h", 0)
+    mc = ui_result.get("market_cap", 1e12)
+    liq_pct = (100.0 * vol / mc) if mc > 0 else 0.0
     
-def render_pretty_summary(result, horizon_days: int = 7):
-    """
-    Pretty dashboard renderer for the Summary view.
-    Complete version with expanded sentiment and combined analysis layout.
-    """
-    market = result["market"]
-    pcts = result.get("sentiment_percentages", {}) or {}
-    rec  = result.get("recommendation", {}) or {}
+    # Recommendation styling
+    rec_label = rec.get("rating", "HOLD / WAIT")
+    rec_emoji = "🟢" if "BUY" in rec_label else ("🔴" if "SELL" in rec_label else "🟡")
+    rec_color = "#38b55d" if "BUY" in rec_label else ("#e34444" if "SELL" in rec_label else "#e3af3d")
+    rec_text = f"Recommendation: {rec_label}"
 
-    # --- Unpack market ---
-    name  = f"{market.get('coin','').capitalize()} ({market.get('symbol','').upper()})"
-    price = market.get("price_usd", float("nan"))
-    c24   = market.get("pct_change_24h", float("nan"))
-    c7    = market.get("pct_change_7d", float("nan"))
-    rsi   = market.get("rsi_14", float("nan"))
-    mcap  = market.get("market_cap", float("nan"))
-    vol24 = market.get("volume_24h", float("nan"))
-
-    # --- Derived ---
-    liq_pct = (vol24 / mcap * 100.0) if (isinstance(mcap,(int,float)) and mcap>0 and isinstance(vol24,(int,float))) else None
-    c24_arrow = "📺" if (isinstance(c24,(int,float)) and c24 >= 0) else "📻"
-    c24_color = "#2ecc71" if (isinstance(c24,(int,float)) and c24 >= 0) else "#e74c3c"
-
-    # Recommendation cosmetics
-    rec_text  = rec.get("rating","HOLD / WAIT")
-    rec_label, rec_emoji, rec_color = _rec_style(rec_text)
+    st.subheader(f"{coin_id.capitalize()} ({ui_result['coin_symbol'].upper()}) Analysis")
+    st.caption(f"Outlook for {horizon_days} days | Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.divider()
 
     # =========================
-    # Header: Price + Metrics
+    # Metrics (4 columns)
     # =========================
-    st.markdown(f"### 📊 {name}")
-    cols = st.columns([1.5, 1.2, 1.2, 1.2])
+    cols = st.columns(4)
     with cols[0]:
-        st.markdown("**Price**")
-        st.markdown(f"<span style='font-size:2rem;font-weight:800'>$ {price:,.2f}</span>", unsafe_allow_html=True)
-        if isinstance(c24,(int,float)):
-            st.markdown(
-                f"<span style='padding:4px 8px;border-radius:999px;background:{c24_color}22;color:{c24_color};font-weight:700'>{c24_arrow} {c24:.2f}% · 24h</span>",
-                unsafe_allow_html=True
-            )
+        st.metric("Current Price (USD)", _fmt_money(price))
+        st.markdown(
+            f"<span style='font-size: 0.8rem; color: #aaa'>24h Change: {c24:+.2f}%</span>",
+            unsafe_allow_html=True
+        )
         # Big recommendation badge
         st.markdown(
             f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;border-radius:12px;"
@@ -1400,21 +1124,20 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.metric("Market Cap", _fmt_money(mcap))
         st.metric("24h Volume", _fmt_money(vol24))
     with cols[2]:
-        st.metric("7d Change", f"{c7:.2f}%" if isinstance(c7,(int,float)) else "—")
+        st.metric("7d Change", f"{c7:+.2f}%" if isinstance(c7,(int,float)) else "—")
         st.metric("RSI (14)", f"{rsi:.1f}" if isinstance(rsi,(int,float)) else "—")
     with cols[3]:
         st.write("**Quick tags**")
         chips = []
-        if isinstance(c7,(int,float)): chips.append(f"7d: {c7:.2f}%")
+        if isinstance(c7,(int,float)): chips.append(f"7d: {c7:+.2f}%")
         if isinstance(liq_pct,(int,float)): chips.append(f"Liquidity: {liq_pct:.1f}%")
         chips.append(f"RSI: {f'{rsi:.1f}' if isinstance(rsi,(int,float)) else '—'} · {_rsi_zone(rsi)}")
         chips.append(rec_text)
         for chip in chips:
             st.markdown(
-                f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:4px 8px;border-radius:12px;margin:2px'>{chip}</span>",
+                f"<span style='display:inline-block;background:#1b2332;color:#eaf0ff;padding:4px 8px;border-radius:12px;margin:2px'>{chip}</span>", 
                 unsafe_allow_html=True
             )
-
     st.divider()
 
     # =========================
@@ -1425,238 +1148,226 @@ def render_pretty_summary(result, horizon_days: int = 7):
         st.subheader("✅ Recommendation & Insight")
     with header_col2:
         st.subheader("⚠️ Risks")
-
+        
     main_col, sidebar_col = st.columns([2.5, 1])
-
+    
     with main_col:
         rec_score = rec.get("score", None)
         rec_rating = rec.get("rating", "HOLD / WAIT")
+        rec_source = rec.get("source", "fallback").capitalize()
         
-        rec_label, rec_emoji, rec_color = _rec_style(rec_rating)
+        st.markdown(f"**Generated by {rec_source}**")
         
-        st.markdown(
-            f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
-            f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>"
-            f"{rec_emoji} {rec_label}</span>",
-            unsafe_allow_html=True
-        )
-        
-        if isinstance(rec_score, (int, float)):
-            score100 = max(0, min(100, int(round(50 + 50*float(rec_score)))))
-            st.progress(score100/100.0, text=f"Model score: {rec_score:+.2f} (−1..+1) → {score100}/100")
-        
-        rec_source = rec.get("source", "unknown")
-        if rec_source == "gemini":
-            st.caption("🤖 Powered by Google Gemini")
-        elif rec_source in ["gpt3", "gpt-3.5", "openai"]:
-            st.caption("🤖 Powered by OpenAI GPT")
-        elif rec_source == "fallback":
-            st.caption("⚙️ Rule-based analysis")
-
-        st.write("")
-
-        st.markdown("**📰 Sentiment Analysis**")
-        pos = float(pcts.get("positive", 0.0))
-        neu = float(pcts.get("neutral", 0.0)) 
-        neg = float(pcts.get("negative", 0.0))
-        
-        st.markdown(_sentiment_bar(pos, neu, neg))
-        st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
-        
-        ins = rec.get("insight","").strip()
-        if ins and len(ins) > 50:
-            import re
-            cleaned_insight = ins
-            cleaned_insight = re.sub(r'Recommendation:\s*(BUY|SELL|HOLD)[^\n]*', f'Recommendation: {rec_label}', cleaned_insight, flags=re.IGNORECASE)
-            cleaned_insight = re.sub(r'\d+\.\s*Recommendation:\s*(BUY|SELL|HOLD)[^\n]*', f'1. Recommendation: {rec_label}', cleaned_insight, flags=re.IGNORECASE)
-            
-            st.info(cleaned_insight)
+        # Display Gemini/Fallback insight
+        if rec_source == "Gemini":
+            st.markdown(rec.get("insight", "No detailed insight available."))
         else:
-            st.info(f"**System Recommendation: {rec_label}** - Sentiment analysis based on recent news headlines and market data.")
+            st.info(rec.get("insight", "No detailed insight available."))
+            
+        # Add a placeholder/padding to use up amount of vertical space to fully occupy the column
+        for _ in range(15): st.write("")
+
 
     with sidebar_col:
-        # === RISKS SECTION ===
-        risk_lines = []
-        if isinstance(liq_pct,(int,float)):
-            badge = "🔴" if liq_pct < 5 else ("🟡" if liq_pct < 10 else "🟢")
-            risk_lines.append(f"{badge} Liquidity: {liq_pct:.1f}% of market cap")
+        # === SENTIMENT SECTION ===
+        st.subheader("📰 Sentiment Score")
+        pos_pct = float(pcts.get("positive", 0.0))
+        neu_pct = float(pcts.get("neutral", 0.0))
+        neg_pct = float(pcts.get("negative", 0.0))
         
-        arts = result.get("articles", []) or []
-        joined = " ".join([a.get("title","") for a in arts])[:3000]
-        if re.search(r"\b(sec|regulat|ban|lawsuit|enforcement|probe|review)\b", joined, re.I):
-            risk_lines.append("🟡 Regulatory mentions")
+        st.markdown(f"**Score**: **{ui_result['agg_sent']:.3f}** (Range -1 to +1)")
+        st.markdown(_sentiment_bar(pos_pct, neu_pct, neg_pct))
+        st.caption(f"Positive: {pos_pct:.1f}% | Neutral: {neu_pct:.1f}% | Negative: {neg_pct:.1f}%")
         
-        ex = result.get("explainability", {}) or {}
-        comps = ex.get("components", {}) or {}
-        ttl = comps.get("total_score", None)
-        if ttl is not None:
-            score = max(0, min(100, int(round(50 + 50*float(ttl)))))
-            st.progress(score/100.0, text=f"Composite Score: {score}/100")
-        
-        for risk in risk_lines:
-            st.write(f"• {risk}")
-        
-        if not risk_lines:
-            st.write("• 🟢 No major risks detected")
-
-        # Adding a large amount of vertical space to fully occupy the column
-        for _ in range(15):
-            st.write("")
-            
         # === MOMENTUM & RSI SECTION ===
         st.subheader("📈 Momentum & RSI")
         
         # 24h momentum
         if isinstance(c24,(int,float)):
-            if c24 > 2:
-                st.write(f"• **24h**: +{c24:.2f}% (Strong)")
-            elif c24 > 0:
-                st.write(f"• **24h**: +{c24:.2f}% (Slight gain)")
-            elif c24 > -2:
-                st.write(f"• **24h**: {c24:+.2f}% (Sideways)")
-            else:
-                st.write(f"• **24h**: {c24:+.2f}% (Declining)")
+            if c24 > 2: st.write(f"• **24h**: +{c24:.2f}% (Strong)")
+            elif c24 > 0: st.write(f"• **24h**: +{c24:.2f}% (Slight gain)")
+            elif c24 > -2: st.write(f"• **24h**: {c24:+.2f}% (Sideways)")
+            else: st.write(f"• **24h**: {c24:+.2f}% (Declining)")
         else:
             st.write("• **24h**: Data unavailable")
-            
-        # 7d momentum  
+
+        # 7d momentum
         if isinstance(c7,(int,float)):
-            if c7 > 5:
-                st.write(f"• **7d**: +{c7:.2f}% (Strong trend)")
-            elif c7 > 0:
-                st.write(f"• **7d**: +{c7:.2f}% (Weekly gain)")
-            elif c7 > -5:
-                st.write(f"• **7d**: {c7:+.2f}% (Consolidation)")
-            else:
-                st.write(f"• **7d**: {c7:+.2f}% (Decline)")
+            if c7 > 5: st.write(f"• **7d**: +{c7:.2f}% (Strong trend)")
+            elif c7 > 0: st.write(f"• **7d**: +{c7:.2f}% (Weekly gain)")
+            elif c7 > -5: st.write(f"• **7d**: {c7:+.2f}% (Consolidation)")
+            else: st.write(f"• **7d**: {c7:+.2f}% (Decline)")
         else:
             st.write("• **7d**: Data unavailable")
-            
+
         # RSI
         if isinstance(rsi,(int,float)):
             zone = _rsi_zone(rsi)
             st.write(f"• **RSI**: {rsi:.1f} ({zone})")
         else:
             st.write("• **RSI**: Data unavailable")
-
+            
         # Adding a large amount of vertical space to fully occupy the column
-        for _ in range(15):
-            st.write("")
+        for _ in range(15): st.write("")
 
-        # === STRATEGY SECTION ===
-        st.subheader("🧠 Strategy Signals")
-        pos_pct = float(pcts.get("positive", 0.0))
-        neg_pct = float(pcts.get("negative", 0.0))
-        sim_score = (pos_pct - neg_pct) / 100.0
-
-        scenarios = generate_scenarios(
-            sim_score,
-            rsi if isinstance(rsi,(int,float)) else float("nan"),
-            c24 if isinstance(c24,(int,float)) else float("nan"),
-            c7 if isinstance(c7,(int,float)) else float("nan"),
-        )
-
-        if scenarios:
-            for scenario in scenarios[:3]:
-                clean_scenario = scenario.replace("🟡 ", "").replace("🟢 ", "").replace("📻 ", "").replace("⚖️ ", "").replace("🔥 ", "")
-                st.write(f"• {clean_scenario}")
-        else:
-            st.write("• Monitor for breakout signals")
-
-    st.divider()
 
     # =========================
-    # Forecast - Single instance only
+    # Tabs for detail
     # =========================
-    st.subheader(f"🔮 {horizon_days}-Day Forecast")
-
-    hist_df = result.get("history")
-    hist_df = hist_df if isinstance(hist_df, pd.DataFrame) else pd.DataFrame()
-    ft = result.get("forecast_table", []) or []
-
-    # Build forecast rows for table
-    rows = []
-    for row in ft[:horizon_days]:
-        d = row.get("date")
-        dstr = d.strftime("%Y-%m-%d") if d is not None else "-"
-        v = row.get("ensemble") or row.get("prophet") or row.get("lstm")
-        rows.append({"Date": dstr, "Forecast ($)": None if v is None else float(v)})
-
-    if rows:
-        df_forecast = pd.DataFrame(rows).set_index("Date")
-        cL, cR = st.columns([1, 1.3])
-        with cL:
-            st.dataframe(df_forecast.style.format({"Forecast ($)": "${:,.2f}"}), use_container_width=True)
-
-        with cR:
-            combined = pd.DataFrame()
-            if not hist_df.empty and "price" in hist_df.columns:
-                combined["History"] = hist_df["price"].tail(180)
-
-            if not df_forecast.empty:
-                try:
-                    forecast_vals = df_forecast["Forecast ($)"].astype(float)
-                    forecast_vals.index = pd.to_datetime(df_forecast.index)
-                    combined = pd.concat([combined, forecast_vals.rename("Forecast")])
-                except Exception:
-                    pass
-
-            if not combined.empty:
-                import altair as alt
-                df_plot = combined.copy()
-
-                try:
-                    df_plot.index = df_plot.index.tz_convert(None)
-                except Exception:
-                    try:
-                        df_plot.index = df_plot.index.tz_localize(None)
-                    except Exception:
-                        pass
-
-                plot_df = df_plot.reset_index().rename(columns={"index": "Date"})
-                plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
-
-                color_scale = alt.Scale(
-                    domain=["History", "Forecast"],
-                    range=["#4e79a7", "#ff4d4f"]
-                )
-
-                base = alt.Chart(plot_df).encode(
-                    x=alt.X("Date:T", title="Date"),
-                    y=alt.Y("Value:Q", title="Price (USD)"),
-                    color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
-                    tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
-                )
-
-                lines = base.mark_line(size=2)
-                points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
-
-                mc_mean = result.get("mc_mean") or []
-                mc_lo   = result.get("mc_lo") or []
-                mc_hi   = result.get("mc_hi") or []
-                chart = (lines + points)
-                try:
-                    if mc_mean and len(mc_mean) == df_forecast.shape[0]:
-                        band_df = pd.DataFrame({
-                            "Date": pd.to_datetime(df_forecast.index),
-                            "lo": mc_lo,
-                            "hi": mc_hi,
-                        })
-                        band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
-                            x=alt.X("Date:T", title="Date"),
-                            y="lo:Q",
-                            y2="hi:Q",
-                        )
-                        chart = chart + band_chart
-                except Exception:
-                    pass
-
-                st.altair_chart(chart.interactive(), use_container_width=True)
-            else:
-                st.caption("_No forecast available._")
-    else:
-        st.caption("_No forecast available._")
+    tab1, tab2, tab3, tab4 = st.tabs(["Chart & Forecast", "Explainability Trace", "Headlines", "Memory (LTM)"])
+    
+    # --- Tab 1: Chart & Forecast ---
+    with tab1:
+        st.subheader(f"Price History & {horizon_days}-Day Forecast")
+        df_hist = ui_result.get("history")
+        df_prophet = ui_result.get("prophet_df")
+        lstm_preds = ui_result.get("lstm_preds")
         
+        # --- Forecast Table ---
+        st.markdown("#### Forecast Summary")
+        ft_data = ui_result.get("forecast_table", [])
+        if ft_data:
+            ft_df = pd.DataFrame(ft_data)
+            ft_df["Date"] = ft_df["Date"].apply(lambda x: x.strftime("%Y-%m-%d"))
+            ft_df.rename(columns={"prophet_val": "Prophet", "lstm_val": "LSTM", "ensemble_val": "Ensemble"}, inplace=True)
+            st.dataframe(ft_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("_No forecast data available._")
+            
+        st.markdown("#### Interactive Price Chart")
+        
+        # Altair charting logic
+        if df_hist is not None and not df_hist.empty:
+            df_hist_chart = df_hist.reset_index().rename(columns={"index": "Date", "price": "History"})
+            df_forecast = pd.DataFrame()
+            
+            # Use ensemble forecast if available, otherwise just LSTM/Prophet
+            forecast_series = None
+            if lstm_preds and df_prophet is not None and not df_prophet.empty:
+                prophet_vals = df_prophet["yhat"].tail(len(lstm_preds)).values
+                ensemble_vals = 0.7 * np.array(lstm_preds) + 0.3 * prophet_vals
+                forecast_series = pd.Series(ensemble_vals, name="Forecast")
+            elif lstm_preds:
+                forecast_series = pd.Series(lstm_preds, name="Forecast")
+            elif df_prophet is not None and not df_prophet.empty:
+                forecast_series = df_prophet["yhat"].tail(horizon_days).reset_index(drop=True).rename("Forecast")
+
+            if forecast_series is not None and not forecast_series.empty:
+                last_dt = df_hist.index[-1]
+                future_index = [last_dt + pd.Timedelta(days=i+1) for i in range(len(forecast_series))]
+                df_forecast = pd.DataFrame({"Date": future_index, "Forecast": forecast_series.values})
+
+            plot_df = pd.concat([df_hist_chart, df_forecast], ignore_index=True)
+            plot_df["Date"] = pd.to_datetime(plot_df["Date"])
+            
+            import altair as alt
+            plot_df = plot_df.melt("Date", var_name="Series", value_name="Value")
+            
+            color_scale = alt.Scale(
+                domain=["History", "Forecast"],
+                range=["#4e79a7", "#ff4d4f"]
+            )
+            
+            base = alt.Chart(plot_df).encode(
+                x=alt.X("Date:T", title="Date"),
+                y=alt.Y("Value:Q", title="Price (USD)"),
+                color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(orient="bottom")),
+                tooltip=["Date:T", "Series:N", alt.Tooltip("Value:Q", format=",.2f")]
+            )
+            
+            lines = base.mark_line(size=2)
+            points = base.transform_filter(alt.datum.Series == "Forecast").mark_point(size=40, filled=True)
+            
+            mc_mean = ui_result.get("mc_mean") or []
+            mc_lo = ui_result.get("mc_lo") or []
+            mc_hi = ui_result.get("mc_hi") or []
+            
+            chart = (lines + points)
+            try:
+                if mc_mean and len(mc_mean) == df_forecast.shape[0]:
+                    band_df = pd.DataFrame({
+                        "Date": pd.to_datetime(df_forecast["Date"]),
+                        "lo": mc_lo,
+                        "hi": mc_hi,
+                    })
+                    band_chart = alt.Chart(band_df).mark_area(opacity=0.15).encode(
+                        x=alt.X("Date:T", title="Date"),
+                        y="lo:Q",
+                        y2="hi:Q",
+                    )
+                    chart = chart + band_chart
+            except Exception:
+                pass
+
+            st.altair_chart(chart.interactive(), use_container_width=True)
+        else:
+            st.caption("_No forecast available._")
+
+
+    # --- Tab 2: Explainability Trace ---
+    with tab2:
+        st.subheader("Decision Breakdown: Rule-Based Components")
+        st.markdown("**This shows the component weights of the internal score (before Gemini's input).**")
+        
+        comps = ui_result.get("explain_comps", {})
+        friendly_ex_text = st.session_state.last_outputs.get("ex", {}).get("explain_summary", "N/A")
+        
+        if comps:
+            st.json(comps)
+        else:
+            st.warning("Explainability trace is currently empty. Re-run the query.")
+            
+        st.markdown("#### Component Interpretation")
+        st.markdown(friendly_ex_text)
+
+    # --- Tab 3: Headlines ---
+    with tab3:
+        st.subheader("Top Headlines & Sentiment Analysis")
+        dfh = ui_result.get("sentiment_table")
+        if dfh is not None and not dfh.empty:
+            df_display = dfh[["text", "label", "score"]].copy()
+            df_display.rename(columns={"text": "Headline", "label": "FinBERT Label", "score": "Confidence"}, inplace=True)
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+        else:
+            st.caption("_No news or sentiment analysis data available._")
+
+    # --- Tab 4: Memory ---
+    with tab4:
+        st.subheader("Conversation History (Short-Term Memory)")
+        history = load_recent_session(st.session_state.session_id)
+        if history:
+            for msg in reversed(history):
+                role = "user" if msg["role"] == "user" else "assistant"
+                is_full_ex = msg["meta"].get("explain_full", False)
+                
+                if role == "assistant" and is_full_ex:
+                    # Skip the full JSON explanation stored in memory
+                    continue
+                
+                with st.chat_message(role):
+                    if role == "assistant":
+                        if msg["meta"].get("chart"):
+                            st.caption(f"Chart saved: {msg['meta']['chart']}")
+                        if msg["meta"].get("explain_summary"):
+                            st.caption(f"Explanation: {msg['meta']['explain_summary'][:80]}...")
+                            
+                    st.markdown(msg["message"])
+        else:
+            st.caption("_No conversation history for this session._")
+            
+        st.markdown("#### Long-Term Memory (FAISS Retrieval)")
+        if EMB_AVAILABLE:
+            st.caption("FAISS is initialized. Last query results (top 5 similar items):")
+            ltm_results = retrieve_similar(ui_result.get("user_message", "crypto analysis"), k=5)
+            if ltm_results:
+                for idx, res in enumerate(ltm_results):
+                    st.text(f"{idx+1}. Score: {res.get('meta', {}).get('score', 'N/A')}\n   Text: {res['text'][:100]}...")
+            else:
+                st.caption("_No similar items found in Long-Term Memory._")
+        else:
+            st.caption("_FAISS/SentenceTransformers not installed. Long-Term Memory inactive._")
+
+
 # =================================================================
 # 8) Build response (returns structured `result` for the UI)
 # =================================================================
@@ -1665,75 +1376,44 @@ def build_single_response(user_message: str, session_id: str):
     coin_id = parsed["coin_id"]
     horizon_days = parsed["horizon_days"]
     coin_symbol = next((c["symbol"] for c in DEFAULT_COINS if c["id"] == coin_id), coin_id[:4])
-
+    
     save_conversation(session_id, "user", user_message)
 
     # Core analysis with GPT-3 insights
-    result = analyze_coin(
-        coin_id, coin_symbol,
-        risk="Medium",
-        horizon_days=horizon_days,
-        forecast_days=horizon_days,
-        model_choice="ensemble",
-    )
-    if "error" in result:
-        resp = f"Error: {result['error']}"
-        save_conversation(session_id, "assistant", resp)
-        return resp, {}, "", None, None
-
-    pretty = make_pretty_output(result, horizon_days)
-
-    # Enhanced explainability with source info
-    ex = result.get("explainability", {}) or {}
-    comps = ex.get("components", {}) or {}
-    friendly_ex = []
+    result = analyze_and_forecast(coin_id, coin_symbol, horizon_days, user_message)
     
-    # Add source information
-    insight_source = ex.get("insight_source", "unknown")
-    if insight_source == "gpt3":
-        friendly_ex.append("AI-powered insights generated using GPT-3")
-    elif insight_source == "fallback":
-        friendly_ex.append("Using rule-based analysis (GPT-3 unavailable)")
+    # Get components for structured output
+    agg_sent = result.get("agg_sent", 0.0)
+    c24 = result.get("pct_24h", float("nan"))
+    c7 = result.get("pct_7d", float("nan"))
+    rsi = result.get("rsi", float("nan"))
+    vol = result.get("volume_24h", 0.0)
+    mc = result.get("market_cap", 1e12)
+    comps, weights = explain_trace_components(agg_sent, c24, c7, rsi)
+    result["explain_comps"] = comps
+
+    # Format output for display/memory
+    pretty = make_pretty_output(result, comps, vol, mc, horizon_days)
+    ex = {"explain_summary": "", "full_explain": comps} # Simple object for full memory storage
     
-    total_score = comps.get("total_score")
-    if isinstance(total_score, (int, float)):
-        exam_score = int(round(50 + 50 * total_score))
-        exam_score = max(0, min(100, exam_score))
-        if exam_score >= 80:
-            mood_text = "very bullish"
-        elif exam_score >= 60:
-            mood_text = "slightly bullish"
-        elif exam_score >= 40:
-            mood_text = "neutral"
-        elif exam_score >= 20:
-            mood_text = "slightly bearish"
-        else:
-            mood_text = "very bearish"
-        friendly_ex.append(f"Score: {exam_score} -> {mood_text}")
+    # Friendly explanation summary for memory
+    def _describe_component(label, val, meaning_pos, meaning_neg):
+        sign = "Positive" if val >= 0.05 else ("Negative" if val <= -0.05 else "Neutral")
+        meaning = meaning_pos if val > 0 else meaning_neg
+        return f"{label}: {sign} ({abs(val):.2f}) -> {meaning}"
 
-    def _describe_component(label, value, pos_hint, neg_hint):
-        if value > 0.02:
-            trend = "slightly bullish"
-            hint  = pos_hint
-        elif value < -0.02:
-            trend = "slightly bearish"
-            hint  = neg_hint
-        else:
-            trend = "neutral"
-            hint  = "balanced/flat"
-        return f"{label}: {value:+.4f} -> {trend} ({hint})"
-
-    if "rsi_component" in comps:
-        friendly_ex.append(_describe_component("RSI", comps["rsi_component"], "momentum improving", "risk of overbought/oversold"))
-    if "sentiment_component" in comps:
-        friendly_ex.append(_describe_component("Sentiment", comps["sentiment_component"], "news mildly positive", "news mildly negative"))
+    friendly_ex = [
+        _describe_component("Sentiment", comps.get("sentiment_component", 0), "positive newsflow", "negative newsflow"),
+    ]
     if "mom24_component" in comps:
-        friendly_ex.append(_describe_component("Mom24", comps["mom24_component"], "24h momentum positive", "24h momentum weak"))
+        friendly_ex.append(_describe_component("Mom24", comps["mom24_component"], "strong 24h momentum", "24h momentum weak"))
     if "mom7_component" in comps:
         friendly_ex.append(_describe_component("Mom7", comps["mom7_component"], "7d momentum uptrend", "7d momentum flat/weak"))
-
+    if "rsi_component" in comps:
+        friendly_ex.append(_describe_component("RSI", comps["rsi_component"], "mean reversion expected (oversold)", "mean reversion expected (overbought)"))
+        
     friendly_ex_text = "\n".join(friendly_ex)
-
+    
     # Headlines text
     if not result.get("sentiment_table", pd.DataFrame()).empty:
         dfh = result["sentiment_table"]
@@ -1748,99 +1428,255 @@ def build_single_response(user_message: str, session_id: str):
         result.get("lstm_preds", []),
         coin_id,
     )
-
+    
+    # Save to short-term memory
     save_conversation(session_id, "assistant", pretty, {"chart": chart_path, "explain_summary": friendly_ex_text})
     save_conversation(session_id, "assistant", json.dumps(ex), {"explain_full": True})
+    
+    # Optionally save to long-term memory
+    if agg_sent != 0.0 and result.get("price") is not None:
+        ltm_meta = {
+            "coin": coin_id, 
+            "price": result["price"], 
+            "score": comps.get("total_score", 0.0),
+            "recommendation": result["recommendation"].get("rating", "HOLD")
+        }
+        add_long_term_item(user_message + " -> " + pretty[:200], ltm_meta)
 
     return pretty, ex, headlines_text, chart_path, result
+
+
+def analyze_and_forecast(coin_id: str, coin_symbol: str, horizon_days: int, user_message: str) -> Dict:
+    # 1. Fetch market data
+    market_df = coingecko_market([coin_id])
+    if market_df.empty:
+        return {"error": f"Could not find market data for {coin_id}"}
+        
+    coin_data = market_df.iloc[0]
+    price = float(coin_data.get("current_price", float("nan")))
+    pct_24h = float(coin_data.get("price_change_percentage_24h", float("nan")))
+    pct_7d = float(coin_data.get("price_change_percentage_7d_in_currency", float("nan")))
+    market_cap = float(coin_data.get("market_cap", float("nan")))
+    volume_24h = float(coin_data.get("total_volume", float("nan")))
+    
+    # 2. Fetch history and compute RSI
+    hist_df = coingecko_chart(coin_id, days=180)
+    rsi = compute_rsi(hist_df["price"] if not hist_df.empty else None, period=14)
+    
+    # 3. Fetch news and run sentiment analysis
+    articles = fetch_rss_articles(coin_id, limit_per_feed=20)
+    headlines = [a["title"] for a in articles]
+    sentiment_analyses = run_finbert(headlines)
+    agg_sent, sentiment_table = sentiment_score(sentiment_analyses)
+    sentiment_pcts = sentiment_percentages(sentiment_analyses)
+    
+    # 4. Run forecasts (use ensemble for Gemini context)
+    prophet_df, prophet_summary = forecast_with_prophet(hist_df["price"] if (not hist_df.empty and "price" in hist_df.columns) else pd.Series(), days=horizon_days)
+    lstm_preds = train_and_forecast_lstm(hist_df["price"] if (not hist_df.empty and "price" in hist_df.columns) else pd.Series(), horizon=horizon_days, window=LSTM_WINDOW, epochs=LSTM_EPOCHS)
+
+    # Determine forecast note for Gemini
+    forecast_note = ""
+    last_prophet = prophet_summary.get("pred_last")
+    if lstm_preds:
+        last_lstm = lstm_preds[-1]
+        if last_prophet:
+            ensemble_pred = 0.7 * last_lstm + 0.3 * last_prophet
+            forecast_note = f"Ensemble target is ${ensemble_pred:.2f} in {horizon_days} days. LSTM: ${last_lstm:.2f}, Prophet: ${last_prophet:.2f}."
+        else:
+            forecast_note = f"LSTM model predicts a price of ${last_lstm:.2f} in {horizon_days} days."
+    elif last_prophet:
+        forecast_note = f"Prophet model predicts a price range of ${prophet_summary['lower']:.2f} to ${prophet_summary['upper']:.2f} with a central prediction of ${last_prophet:.2f} in {horizon_days} days."
+
+    # 5. Call Gemini for insight and recommendation
+    risk_level = "Medium" # Simplification for demo
+    recommendation = call_gpt3_for_insight(
+        coin_id=coin_id,
+        coin_symbol=coin_symbol,
+        sentiment=agg_sent,
+        pct_24h=pct_24h,
+        pct_7d=pct_7d,
+        rsi=rsi,
+        price=price,
+        market_cap=market_cap,
+        volume_24h=volume_24h,
+        risk=risk_level,
+        horizon_days=horizon_days,
+        top_headlines=headlines[:5],
+        forecast_note=forecast_note
+    )
+
+    # 6. Build forecast table for UI
+    forecast_table = []
+    last_date = hist_df.index[-1] if (hist_df is not None and not hist_df.empty) else None
+    for i in range(horizon_days):
+        day = i + 1
+        date = (last_date + pd.Timedelta(days=day)) if last_date is not None else None
+        
+        prophet_val = None
+        try:
+            if (prophet_df is not None) and (not prophet_df.empty):
+                future_rows = prophet_df.tail(horizon_days).reset_index(drop=True)
+                if i < len(future_rows):
+                    prophet_val = float(future_rows.loc[i, "yhat"])
+        except Exception:
+            prophet_val = None
+            
+        lstm_val = None
+        try:
+            if lstm_preds and i < len(lstm_preds):
+                lstm_val = float(lstm_preds[i])
+        except Exception:
+            lstm_val = None
+            
+        ensemble_val = None
+        if (prophet_val is not None) and (lstm_val is not None):
+            ensemble_val = float(0.3 * prophet_val + 0.7 * lstm_val)
+            
+        forecast_table.append({
+            "Day": day,
+            "Date": date,
+            "prophet_val": prophet_val,
+            "lstm_val": lstm_val,
+            "ensemble_val": ensemble_val,
+        })
+        
+    # 7. Monte-Carlo uncertainty band (simplistic for log-returns model)
+    mc_mean, mc_lo, mc_hi = [], [], []
+    try:
+        if hist_df is not None and not hist_df.empty and "price" in hist_df.columns and lstm_preds:
+            hist_prices = hist_df["price"].astype(float)
+            p0 = float(hist_prices.iloc[-1])
+            logrets = np.log(hist_prices).diff().dropna()
+            
+            # Estimate volatility
+            if not logrets.empty:
+                sig = float(logrets.ewm(span=20, adjust=False).std().iloc[-1])
+            else:
+                sig = 0.0
+                
+            sig = 0.0 if (isinstance(sig, float) and (math.isnan(sig) or sig < 1e-9)) else sig
+            
+            # Estimate drift (average return from LSTM predictions)
+            drift = np.diff(np.log([p0] + list(lstm_preds)))
+            horizon = len(lstm_preds)
+            if len(drift) < horizon and len(drift) > 0:
+                 drift = np.pad(drift, (0, horizon - len(drift)), mode="edge")
+
+            rng = np.random.default_rng(42)
+            n_paths = 50 
+            sims = []
+            
+            for _ in range(n_paths):
+                # Add noise component
+                noise = rng.normal(0.0, sig, size=horizon) * 0.6 
+                rets = drift + noise
+                path = p0 * np.exp(np.cumsum(rets))
+                sims.append(path)
+                
+            sims = np.array(sims)
+            mc_mean = sims.mean(axis=0).tolist()
+            mc_lo = np.percentile(sims, 25, axis=0).tolist()
+            mc_hi = np.percentile(sims, 75, axis=0).tolist()
+    except Exception:
+        mc_mean, mc_lo, mc_hi = [], [], []
+
+
+    # 8. Compile final result object
+    return {
+        "coin_id": coin_id,
+        "coin_symbol": coin_symbol,
+        "price": price,
+        "pct_24h": pct_24h,
+        "pct_7d": pct_7d,
+        "market_cap": market_cap,
+        "volume_24h": volume_24h,
+        "rsi": rsi,
+        "agg_sent": agg_sent,
+        "sentiment_pcts": sentiment_pcts,
+        "sentiment_table": sentiment_table,
+        "articles": articles,
+        "history": hist_df,
+        "prophet_df": prophet_df,
+        "prophet_summary": prophet_summary,
+        "lstm_preds": lstm_preds,
+        "forecast_table": forecast_table,
+        "recommendation": recommendation,
+        "user_message": user_message,
+        "mc_mean": mc_mean,
+        "mc_lo": mc_lo,
+        "mc_hi": mc_hi,
+    }
 
 
 # =================================================================
 # 9) STREAMLIT APP (Summary-only UI, polished with Send below input)
 # =================================================================
+
+# --- Initialize session state ---
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.last_outputs = {}
+
 st.markdown("""
 <style>
 /* Overall spacing */
-.block-container { padding-top: 1.8rem; padding-bottom: 2.4rem; }
-
-/* Cards */
-.card { background: #0b1220; border: 1px solid #1f2a44; border-radius: 16px; padding: 16px 18px; }
-.card > h3, .card > h4 { margin-top: 0; }
-
-/* Buttons & chips */
-button[kind="primary"] { border-radius: 12px !important; }
-.chips span{
-  display:inline-block; padding:6px 10px; border-radius:999px; margin:4px 6px 0 0;
-  border:1px solid #233047; color:#dfe8ff; background:#0e1726; font-size:.88rem; cursor:pointer;
+.block-container {
+    padding-top: 1.8rem;
+    padding-bottom: 2.4rem;
 }
-.chips span:hover{ background:#122038; }
-
-/* Headings */
-h1, h2, h3 { letter-spacing:.01em; }
-.app-title{ display:flex; align-items:center; gap:.6rem; }
-.app-title .logo{
-  width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center;
-  background:linear-gradient(135deg,#7c3aed33,#06b6d433); border:1px solid #24324a; border-radius:12px;
-  font-size:1.1rem;
+/* Input card styling */
+.input-card {
+    border: 1px solid #1f2a38;
+    border-radius: 12px;
+    padding: 15px;
+    background-color: #141c27;
 }
-.app-subtitle{ color:#96a7bf; margin:-.15rem 0 1.1rem 0; }
+/* Style Streamlit text input box */
+div[data-testid="stTextInput"] > div > div > input {
+    border-radius: 8px;
+    background-color: #0d1117; 
+    border: 1px solid #1f2a38;
+}
+/* Custom chips/prompts styling */
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 15px;
+}
+.chips span {
+    background-color: #1b2332;
+    color: #a0a6b0;
+    padding: 6px 12px;
+    border-radius: 16px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    border: 1px solid #1b2332;
+}
+.chips span:hover {
+    background-color: #263346;
+    color: #eaf0ff;
+}
 
-/* Info banner */
-.banner { background:#0e213a; border:1px solid #1c3357; color:#cfe3ff; border-radius:12px; padding:.9rem 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---- Header ------------------------------------------------------------------
-st.markdown(
-    "<div class='app-title'>"
-    "<div class='logo'>💬</div>"
-    "<h1 style='margin:0'>Crypto Agent</h1>"
-    "</div>",
-    unsafe_allow_html=True
-)
-st.markdown(
-    "<div class='app-subtitle'>Ask about BTC, ETH, SOL, etc. This app renders a single, clean Summary dashboard. "
-    "Educational only — not financial advice.</div>",
-    unsafe_allow_html=True
-)
+# ---- Title and context -------------------------------------------------------
+st.title("Crypto Analyst")
+st.caption("AI-powered technical, sentiment, and fundamental analysis for cryptocurrencies.")
 
-# ---- Session state -----------------------------------------------------------
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
-if "last_outputs" not in st.session_state:
-    st.session_state.last_outputs = {
-        "pretty": "",
-        "ex": {},
-        "heads": "",
-        "chart": None,
-        "result_for_ui": None,
-        "horizon": 7,
-    }
-
-# ---- Quick actions -----------------------------------------------------------
-with st.container():
-    colA, colB = st.columns([2, 3])
-    with colA:
-        st.markdown("##### Quick coins")
-        coins_html = "<div class='chips'>"
-        for c in DEFAULT_COINS:
-            q = f"{c['name']} {7}-day forecast"
-            coins_html += f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{q}'}}, '*')\">{c['name']}</span>"
-        coins_html += "</div>"
-        st.markdown(coins_html, unsafe_allow_html=True)
-
-    with colB:
-        st.markdown("##### Suggested prompts")
-        prompts = [
-            "ETH 7-day forecast",
-            "Should I buy BTC?",
-            "SOL sentiment and risks",
-            "ADA next week outlook",
-        ]
-        html = "<div class='chips'>" + "".join(
-            [f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{p}'}}, '*')\">{p}</span>" for p in prompts]
-        ) + "</div>"
-        st.markdown(html, unsafe_allow_html=True)
+# ---- Quick prompts (clickable chips) -----------------------------------------
+prompts = [
+    "BTC 7-day forecast",
+    "Should I buy ETH?",
+    "What is the sentiment for SOL?",
+    "XRP 30-day price prediction",
+]
+html = "<div class='chips'>" + "".join(
+    [f"<span onclick=\"window.parent.postMessage({{'type':'streamlit:setComponentValue','value':'{p}'}}, '*')\">{p}</span>" for p in prompts]
+) + "</div>"
+st.markdown(html, unsafe_allow_html=True)
 
 # ---- Input card --------------------------------------------------------------
 with st.container():
@@ -1873,9 +1709,17 @@ if send_clicked and user_message.strip():
 # ---- Render summary or an empty state ----------------------------------------
 ui_result = st.session_state.last_outputs.get("result_for_ui")
 if ui_result:
-    render_pretty_summary(
-        ui_result,
-        horizon_days=st.session_state.last_outputs.get("horizon", 7),
-    )
+    # Check if a Gemini error occurred
+    if "error" in ui_result:
+        st.error(f"Error: {ui_result['error']}")
+    else:
+        # Check if fallback occurred and warn the user (optional, as the UI handles it)
+        if ui_result.get("recommendation", {}).get("source") == "fallback":
+             st.warning("Could not connect to Gemini API. Analysis is based on rule-based fallback logic.")
+
+        render_pretty_summary(
+            ui_result,
+            horizon_days=st.session_state.last_outputs.get("horizon", 7)
+        )
 else:
-    st.markdown("<div class='banner'>Ask about a coin to generate the dashboard.</div>", unsafe_allow_html=True)
+    st.info("Start by asking a question about a cryptocurrency, e.g., 'What is the 7-day forecast for BNB?'")
