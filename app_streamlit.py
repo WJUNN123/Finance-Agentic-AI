@@ -1382,6 +1382,16 @@ def build_single_response(user_message: str, session_id: str):
     # Core analysis with GPT-3 insights
     result = analyze_and_forecast(coin_id, coin_symbol, horizon_days, user_message)
     
+    # === FIX START ===
+    # Check for error immediately after analysis and exit gracefully before accessing other keys
+    if "error" in result:
+        # Save error message to short-term memory
+        error_msg = f"Error during analysis for {coin_id}: {result['error']}"
+        save_conversation(session_id, "assistant", error_msg, {})
+        # Return error details to the Streamlit loop
+        return error_msg, {}, "", None, result
+    # === FIX END ===
+    
     # Get components for structured output
     agg_sent = result.get("agg_sent", 0.0)
     c24 = result.get("pct_24h", float("nan"))
@@ -1448,9 +1458,13 @@ def build_single_response(user_message: str, session_id: str):
 
 def analyze_and_forecast(coin_id: str, coin_symbol: str, horizon_days: int, user_message: str) -> Dict:
     # 1. Fetch market data
-    market_df = coingecko_market([coin_id])
+    try:
+        market_df = coingecko_market([coin_id])
+    except Exception as e:
+        return {"error": f"Failed to fetch market data from CoinGecko: {e}"}
+        
     if market_df.empty:
-        return {"error": f"Could not find market data for {coin_id}"}
+        return {"error": f"Could not find market data for coin ID: {coin_id}"}
         
     coin_data = market_df.iloc[0]
     price = float(coin_data.get("current_price", float("nan")))
