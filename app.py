@@ -9,16 +9,15 @@ st.set_page_config(page_title="Agentic Gemini (Router + Tools)", layout="wide")
 st.title("Agentic AI (Gemini Router + Summary) — Streamlit Demo")
 st.caption("Informational only. Not financial advice. No automated trading actions.")
 
-# --- API key from Streamlit Secrets ONLY ---
+# API key from Streamlit Secrets ONLY
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
     st.error("Missing GEMINI_API_KEY in Streamlit Secrets. Add it in Streamlit Cloud → Settings → Secrets.")
     st.stop()
 
-# Sidebar settings
+# Sidebar settings (NO model selector now)
 st.sidebar.header("Settings")
-model_name = st.sidebar.text_input("Model", value="gemini-2.5-flash")
 max_steps = st.sidebar.slider("Max tool steps", 2, 10, 6)
 show_debug = st.sidebar.checkbox("Show debug details", value=False)
 
@@ -29,9 +28,9 @@ st.sidebar.code("Give me ETHUSDT 4h snapshot with risk label.")
 
 # Session state
 if "history" not in st.session_state:
-    st.session_state.history = []  # agent history (Gemini contents)
+    st.session_state.history = []
 if "messages" not in st.session_state:
-    st.session_state.messages = []  # chat UI messages
+    st.session_state.messages = []
 
 # Render chat messages
 for m in st.session_state.messages:
@@ -51,7 +50,6 @@ if user_input:
             answer, new_history = run_agent(
                 user_message=user_input,
                 chat_history=st.session_state.history,
-                model=model_name,
                 max_steps=max_steps,
             )
             st.markdown(answer)
@@ -61,31 +59,34 @@ if user_input:
 
     if show_debug:
         st.markdown("### Debug (latest agent history items)")
-        # Show last few entries: typically tool calls + tool responses + final response
         try:
             st.json([c.model_dump() for c in st.session_state.history[-6:]])
         except Exception:
             st.write(st.session_state.history[-6:])
 
-# Optional manual chart (also helps test if tools work)
+# Optional manual chart (CoinGecko)
 st.markdown("---")
 st.subheader("Optional: Quick chart (manual fetch)")
 
 col1, col2, col3 = st.columns(3)
 symbol = col1.selectbox("Symbol", ["BTCUSDT", "ETHUSDT"], index=0)
-interval = col2.selectbox("Interval", ["15m", "1h", "4h", "1d"], index=1)
+interval = col2.selectbox("Interval", ["15m", "30m", "1h", "4h", "1d"], index=2)
 limit = col3.slider("Candles", 50, 500, 200, 50)
 
 if st.button("Fetch & plot"):
     data = tool_impl.get_klines(symbol=symbol, interval=interval, limit=limit)
 
-    import pandas as pd
-    df = pd.DataFrame(data.get("candles", []))
-    if df.empty:
-        st.error("No candles returned.")
+    if "error" in data:
+        st.error(data["error"])
         st.json(data)
     else:
-        df["open_time"] = pd.to_datetime(df["open_time"])
-        df = df.sort_values("open_time")
-        st.line_chart(df.set_index("open_time")["close"])
-        st.json(tool_impl.compute_indicators(symbol=symbol, interval=interval, limit=limit))
+        import pandas as pd
+        df = pd.DataFrame(data.get("candles", []))
+        if df.empty:
+            st.error("No candles returned.")
+            st.json(data)
+        else:
+            df["open_time"] = pd.to_datetime(df["open_time"])
+            df = df.sort_values("open_time")
+            st.line_chart(df.set_index("open_time")["close"])
+            st.json(tool_impl.compute_indicators(symbol=symbol, interval=interval, limit=limit))
