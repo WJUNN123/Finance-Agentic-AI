@@ -20,6 +20,7 @@ else:
 st.sidebar.header("Settings")
 model_name = st.sidebar.text_input("Model", value="gemini-2.5-flash")
 max_steps = st.sidebar.slider("Max tool steps", 2, 10, 6)
+show_debug = st.sidebar.checkbox("Show debug details", value=False)
 
 st.sidebar.markdown("---")
 st.sidebar.write("Example prompts:")
@@ -58,7 +59,15 @@ if user_input:
     st.session_state.history = new_history
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
-# Optional manual chart
+    if show_debug:
+        st.markdown("### Debug (latest agent history items)")
+        # Show last few entries: typically tool calls + tool responses + final response
+        try:
+            st.json([c.model_dump() for c in st.session_state.history[-6:]])
+        except Exception:
+            st.write(st.session_state.history[-6:])
+
+# Optional manual chart (also helps test if tools work)
 st.markdown("---")
 st.subheader("Optional: Quick chart (manual fetch)")
 
@@ -71,11 +80,12 @@ if st.button("Fetch & plot"):
     data = tool_impl.get_klines(symbol=symbol, interval=interval, limit=limit)
 
     import pandas as pd
-    df = pd.DataFrame(data["candles"])
-    df["open_time"] = pd.to_datetime(df["open_time"])
-    df = df.sort_values("open_time")
-
-    st.line_chart(df.set_index("open_time")["close"])
-
-    ind = tool_impl.compute_indicators(symbol=symbol, interval=interval, limit=limit)
-    st.json(ind)
+    df = pd.DataFrame(data.get("candles", []))
+    if df.empty:
+        st.error("No candles returned.")
+        st.json(data)
+    else:
+        df["open_time"] = pd.to_datetime(df["open_time"])
+        df = df.sort_values("open_time")
+        st.line_chart(df.set_index("open_time")["close"])
+        st.json(tool_impl.compute_indicators(symbol=symbol, interval=interval, limit=limit))
