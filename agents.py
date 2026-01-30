@@ -10,50 +10,42 @@ import tools as tool_impl
 
 ToolFn = Callable[..., Dict[str, Any]]
 
-
 SYSTEM_PROMPT = """You are a router-style agent inside a Streamlit app.
 
-You can call tools to fetch market data and compute indicators.
-You MUST call tools if the user asks for market conditions, prices, indicators, or risk.
+You have tools:
+- compute_indicators(symbol, interval, limit): returns latest price + SMA/RSI/volatility and metadata
+- risk_label(volatility_50, rsi_14): returns a simple risk tag
+- get_klines exists but prefer compute_indicators first.
 
-Safety / constraints:
-- You are NOT a financial advisor.
-- Do NOT give "buy" / "sell" commands.
-- Use neutral labels such as: "watch", "caution", "positive bias".
-- Always explain reasons briefly.
+When the user asks for a market snapshot / indicators / risk:
+1) Call compute_indicators using the user's symbol and timeframe. Use limit=200 if not given.
+2) If compute_indicators returns error, explain briefly and suggest retry.
+3) If indicators succeeded, call risk_label using volatility_50 and rsi_14.
+4) Write the final response in simple words.
+
+Safety rules:
+- Not financial advice.
+- Do NOT give "buy/sell" commands.
+- Use neutral labels such as "watch", "caution", "positive bias".
 
 Output format:
-1) Market snapshot (price, trend, volatility)
-2) Indicators (SMA, RSI) in simple terms
+1) Market snapshot (latest price, trend_hint, volatility)
+2) Indicators (SMA20 vs SMA50, RSI14) explained simply
 3) Risk label
 4) Short conclusion (watch/caution/positive bias)
 """
 
 
 def build_tools() -> Tuple[List[types.Tool], Dict[str, ToolFn]]:
-    get_klines_decl = {
-        "name": "get_klines",
-        "description": "Fetch recent OHLCV candles for a symbol from Binance.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string", "description": "Trading pair like BTCUSDT, ETHUSDT."},
-                "interval": {"type": "string", "description": "Interval: 1m, 5m, 15m, 1h, 4h, 1d."},
-                "limit": {"type": "integer", "description": "Number of candles (e.g., 200)."},
-            },
-            "required": ["symbol"],
-        },
-    }
-
     compute_indicators_decl = {
         "name": "compute_indicators",
-        "description": "Compute SMA(20), SMA(50), RSI(14), volatility using candles.",
+        "description": "Compute latest price + SMA(20), SMA(50), RSI(14), volatility using fetched candles (has fallback).",
         "parameters": {
             "type": "object",
             "properties": {
                 "symbol": {"type": "string", "description": "Trading pair like BTCUSDT, ETHUSDT."},
-                "interval": {"type": "string", "description": "Interval: 1h, 4h, 1d."},
-                "limit": {"type": "integer", "description": "Candles to use (e.g., 200)."},
+                "interval": {"type": "string", "description": "Interval: 15m, 1h, 4h, 1d."},
+                "limit": {"type": "integer", "description": "Candles to use (recommended 200)."},
             },
             "required": ["symbol"],
         },
@@ -61,7 +53,7 @@ def build_tools() -> Tuple[List[types.Tool], Dict[str, ToolFn]]:
 
     risk_label_decl = {
         "name": "risk_label",
-        "description": "Create a simple risk label from volatility and RSI (informational).",
+        "description": "Create a simple risk label from volatility and RSI (informational only).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -72,12 +64,29 @@ def build_tools() -> Tuple[List[types.Tool], Dict[str, ToolFn]]:
         },
     }
 
-    toolset = types.Tool(function_declarations=[get_klines_decl, compute_indicators_decl, risk_label_decl])
+    # Keep get_klines available (optional), but the prompt tells model to prefer compute_indicators
+    get_klines_decl = {
+        "name": "get_klines",
+        "description": "Fetch recent OHLCV candles (Binance with fallback).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Trading pair like BTCUSDT, ETHUSDT."},
+                "interval": {"type": "string", "description": "Interval: 15m, 1h, 4h, 1d."},
+                "limit": {"type": "integer", "description": "Number of candles."},
+            },
+            "required": ["symbol"],
+        },
+    }
+
+    toolset = types.Tool(
+        function_declarations=[compute_indicators_decl, risk_label_decl, get_klines_decl]
+    )
 
     tool_map: Dict[str, ToolFn] = {
-        "get_klines": tool_impl.get_klines,
         "compute_indicators": tool_impl.compute_indicators,
         "risk_label": tool_impl.risk_label,
+        "get_klines": tool_impl.get_klines,
     }
 
     return [toolset], tool_map
@@ -102,7 +111,6 @@ def run_agent(
     if chat_history:
         contents.extend(chat_history)
 
-    # Add user content with system prompt (simple approach that works well in apps)
     contents.append(
         types.Content(
             role="user",
@@ -118,18 +126,15 @@ def run_agent(
     for _ in range(max_steps):
         resp = client.models.generate_content(model=model, contents=contents, config=config)
 
-        # Save model output to history
         model_parts = resp.candidates[0].content.parts
         contents.append(types.Content(role="model", parts=model_parts))
 
-        # Look for function call
         fn_call = None
         for p in model_parts:
             if p.function_call:
                 fn_call = p.function_call
                 break
 
-        # If tool call exists, run it and feed it back
         if fn_call:
             fn_name = fn_call.name
             fn_args = dict(fn_call.args or {})
@@ -147,7 +152,6 @@ def run_agent(
             contents.append(types.Content(role="user", parts=[tool_part]))
             continue
 
-        # Otherwise return normal text
         return (resp.text or ""), contents
 
     return "I reached the tool-step limit. Please try a shorter request.", contents
