@@ -1,18 +1,5 @@
-streamlit
-feedparser
-prophet
-tensorflow==2.20.0
-tf-keras
-sentence-transformers
-faiss-cpu  # Use faiss-gpu if you're using a GPU
-shap
-pandas
-numpy
-matplotlib
-openai==0.28
-transformers
-plotly
-scikit-learn
-requests
-torch
-google-generativeai
+streamlit>=1.31
+google-genai>=0.5.0
+requests>=2.31
+pandas>=2.0
+numpy>=1.24
