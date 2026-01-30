@@ -3,64 +3,80 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import requests
 
-BINANCE_BASE = "https://api.binance.com"
+BINANCE_BASES = [
+    "https://api.binance.com",
+    "https://data-api.binance.vision",  # sometimes works better from cloud
+]
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
+UA = {"User-Agent": "streamlit-agentic-demo/1.0"}
 
-def _http_get(url: str, params: dict | None = None, timeout: int = 20) -> Any:
-    r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": "streamlit-agentic-app"})
-    r.raise_for_status()
-    return r.json()
+
+def _http_get(url: str, params: dict | None = None, timeout: int = 20, retries: int = 3) -> Any:
+    last_err: Optional[str] = None
+    for i in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=timeout, headers=UA)
+            # Explicitly handle rate limit / server errors
+            if r.status_code in (429, 500, 502, 503, 504):
+                last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+                time.sleep(1.5 * (i + 1))
+                continue
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {str(e)}"
+            time.sleep(1.5 * (i + 1))
+    raise RuntimeError(last_err or "Unknown HTTP error")
 
 
 def _binance_klines(symbol: str, interval: str, limit: int) -> Dict[str, Any]:
-    endpoint = f"{BINANCE_BASE}/api/v3/klines"
-    data = _http_get(endpoint, params={"symbol": symbol, "interval": interval, "limit": int(limit)})
+    symbol = symbol.upper().strip()
+    endpoint_path = "/api/v3/klines"
+    last_error = None
 
-    cols = [
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "num_trades",
-        "taker_base_vol", "taker_quote_vol", "ignore"
-    ]
-    df = pd.DataFrame(data, columns=cols)
+    for base in BINANCE_BASES:
+        try:
+            url = f"{base}{endpoint_path}"
+            data = _http_get(url, params={"symbol": symbol, "interval": interval, "limit": int(limit)}, timeout=20, retries=3)
 
-    for c in ["open", "high", "low", "close", "volume"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+            cols = [
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_volume", "num_trades",
+                "taker_base_vol", "taker_quote_vol", "ignore"
+            ]
+            df = pd.DataFrame(data, columns=cols)
 
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+            for c in ["open", "high", "low", "close", "volume"]:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    candles = df[["open_time", "open", "high", "low", "close", "volume"]].to_dict(orient="records")
-    return {
-        "source": "binance",
-        "symbol": symbol,
-        "interval": interval,
-        "limit": int(limit),
-        "candles": candles,
-        "fetched_at_unix": int(time.time()),
-    }
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
+            candles = df[["open_time", "open", "high", "low", "close", "volume"]].to_dict(orient="records")
+            return {
+                "source": "binance",
+                "binance_base": base,
+                "symbol": symbol,
+                "interval": interval,
+                "limit": int(limit),
+                "candles": candles,
+                "fetched_at_unix": int(time.time()),
+            }
 
-def _cg_map_interval_to_days(interval: str, limit: int) -> int:
-    # Rough mapping to get enough points. CoinGecko returns per-minute only for short ranges.
-    interval = interval.lower()
-    if interval in ["1m", "3m", "5m", "15m", "30m"]:
-        return 1  # minute granularity available for ~1 day window (varies)
-    if interval in ["1h", "2h", "4h", "6h", "12h"]:
-        return max(3, min(30, int(limit / 24) + 3))
-    if interval in ["1d"]:
-        return max(30, min(365, limit + 10))
-    return 7
+        except Exception as e:
+            last_error = f"{base} -> {type(e).__name__}: {str(e)}"
+
+    raise RuntimeError(last_error or "Binance failed")
 
 
-def _cg_coin_id_from_symbol(symbol: str) -> str | None:
+def _cg_coin_id(symbol: str) -> Optional[str]:
     s = symbol.upper()
-    # minimal mapping for your demo
     if s.startswith("BTC"):
         return "bitcoin"
     if s.startswith("ETH"):
@@ -68,56 +84,56 @@ def _cg_coin_id_from_symbol(symbol: str) -> str | None:
     return None
 
 
-def _coingecko_ohlc(symbol: str, interval: str, limit: int) -> Dict[str, Any]:
-    coin_id = _cg_coin_id_from_symbol(symbol)
+def _coingecko_market_chart(symbol: str, interval: str, limit: int) -> Dict[str, Any]:
+    """
+    More reliable than /ohlc for demos.
+    Uses /market_chart to get prices, then resamples.
+    """
+    coin_id = _cg_coin_id(symbol)
     if not coin_id:
-        return {"error": f"CoinGecko fallback only supports BTC/ETH in this demo. Got symbol={symbol}."}
+        return {"error": f"CoinGecko fallback supports BTC/ETH only. Got {symbol}."}
 
-    days = _cg_map_interval_to_days(interval, limit)
+    # choose days to cover enough points
+    interval = interval.lower()
+    if interval in ["15m", "30m", "1h"]:
+        days = 2
+    elif interval in ["4h", "6h", "12h"]:
+        days = 7
+    else:
+        days = 30
 
-    # CoinGecko OHLC endpoint (returns [timestamp, open, high, low, close])
-    endpoint = f"{COINGECKO_BASE}/coins/{coin_id}/ohlc"
-    data = _http_get(endpoint, params={"vs_currency": "usd", "days": days})
+    url = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
+    data = _http_get(url, params={"vs_currency": "usd", "days": days}, timeout=20, retries=3)
 
-    df = pd.DataFrame(data, columns=["open_time", "open", "high", "low", "close"])
+    prices = data.get("prices", [])
+    if not prices:
+        return {"error": "CoinGecko returned no prices.", "raw_keys": list(data.keys())}
+
+    df = pd.DataFrame(prices, columns=["open_time", "price"])
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["volume"] = None  # OHLC endpoint doesn't provide volume
-
-    # Downsample to approximate requested interval
-    # Convert to time index and resample if interval >= 1h
     df = df.set_index("open_time").sort_index()
 
-    rule_map = {
-        "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D",
-        "15m": "15T", "30m": "30T",
-    }
-    rule = rule_map.get(interval.lower())
-    if rule:
-        ohlc = df[["open", "high", "low", "close"]].resample(rule).agg(
-            {"open": "first", "high": "max", "low": "min", "close": "last"}
-        ).dropna()
-    else:
-        ohlc = df[["open", "high", "low", "close"]].dropna()
+    rule_map = {"15m": "15T", "30m": "30T", "1h": "1H", "4h": "4H", "1d": "1D"}
+    rule = rule_map.get(interval, "1H")
 
-    ohlc = ohlc.tail(limit).reset_index()
-    candles = ohlc.assign(volume=None).to_dict(orient="records")
+    # Build pseudo-OHLC from price series
+    ohlc = df["price"].resample(rule).ohlc().dropna().tail(limit)
+    ohlc = ohlc.rename(columns={"open": "open", "high": "high", "low": "low", "close": "close"}).reset_index()
+    ohlc["volume"] = None
 
+    candles = ohlc.rename(columns={"open_time": "open_time"}).to_dict(orient="records")
     return {
         "source": "coingecko",
         "symbol": symbol,
         "interval": interval,
         "limit": int(limit),
         "candles": candles,
+        "note": "CoinGecko uses USD price series; OHLC is resampled; volume may be missing.",
         "fetched_at_unix": int(time.time()),
-        "note": "CoinGecko provides USD candles; volume may be missing.",
     }
 
 
 def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200) -> Dict[str, Any]:
-    """
-    Primary: Binance. Fallback: CoinGecko (BTC/ETH demo).
-    Returns JSON-friendly candles or an error with details.
-    """
     symbol = symbol.upper().strip()
     interval = interval.strip()
     limit = int(limit)
@@ -125,57 +141,60 @@ def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200) 
     try:
         return _binance_klines(symbol=symbol, interval=interval, limit=limit)
     except Exception as e:
-        # fallback
-        fallback = _coingecko_ohlc(symbol=symbol, interval=interval, limit=limit)
+        fallback = _coingecko_market_chart(symbol=symbol, interval=interval, limit=limit)
         return {
-            "warning": f"Binance failed ({type(e).__name__}: {e}). Using fallback if available.",
+            "warning": f"Binance failed: {type(e).__name__}: {str(e)}",
             **fallback,
         }
 
 
 def compute_indicators(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200) -> Dict[str, Any]:
-    payload = get_klines(symbol=symbol, interval=interval, limit=limit)
-    if "candles" not in payload or not payload["candles"]:
-        return {"error": "No candle data available.", "details": payload}
+    try:
+        payload = get_klines(symbol=symbol, interval=interval, limit=limit)
+        candles = payload.get("candles", [])
+        if not candles:
+            return {"error": "No candle data returned.", "details": payload}
 
-    df = pd.DataFrame(payload["candles"])
-    if df.empty or df["close"].isna().all():
-        return {"error": "No usable close prices.", "details": payload}
+        df = pd.DataFrame(candles)
+        if df.empty or df["close"].isna().all():
+            return {"error": "No usable close prices.", "details": payload}
 
-    close = df["close"].astype(float)
-    ret = close.pct_change()
+        close = df["close"].astype(float)
+        ret = close.pct_change()
 
-    sma_20 = close.rolling(20).mean().iloc[-1]
-    sma_50 = close.rolling(50).mean().iloc[-1]
+        sma_20 = close.rolling(20).mean().iloc[-1]
+        sma_50 = close.rolling(50).mean().iloc[-1]
 
-    # RSI(14)
-    delta = close.diff()
-    up = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
-    roll_up = up.rolling(14).mean()
-    roll_down = down.rolling(14).mean()
-    rs = roll_up / (roll_down + 1e-12)
-    rsi_14 = (100 - (100 / (1 + rs))).iloc[-1]
+        delta = close.diff()
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        roll_up = up.rolling(14).mean()
+        roll_down = down.rolling(14).mean()
+        rs = roll_up / (roll_down + 1e-12)
+        rsi_14 = (100 - (100 / (1 + rs))).iloc[-1]
 
-    vol_50 = ret.tail(50).std()
-    latest_price = float(close.iloc[-1])
+        vol_50 = ret.tail(50).std()
+        latest_price = float(close.iloc[-1])
 
-    trend_hint = "up" if (not math.isnan(sma_20) and not math.isnan(sma_50) and sma_20 > sma_50) else "down_or_flat"
+        trend_hint = "up" if (not math.isnan(sma_20) and not math.isnan(sma_50) and sma_20 > sma_50) else "down_or_flat"
 
-    return {
-        "data_source": payload.get("source"),
-        "symbol": payload.get("symbol", symbol),
-        "interval": interval,
-        "latest_price": latest_price,
-        "sma_20": None if math.isnan(sma_20) else float(sma_20),
-        "sma_50": None if math.isnan(sma_50) else float(sma_50),
-        "rsi_14": None if pd.isna(rsi_14) else float(rsi_14),
-        "volatility_50": None if pd.isna(vol_50) else float(vol_50),
-        "trend_hint": trend_hint,
-        "n_candles": int(len(df)),
-        "warning": payload.get("warning"),
-        "note": payload.get("note"),
-    }
+        return {
+            "data_source": payload.get("source"),
+            "symbol": payload.get("symbol", symbol),
+            "interval": interval,
+            "latest_price": latest_price,
+            "sma_20": None if math.isnan(sma_20) else float(sma_20),
+            "sma_50": None if math.isnan(sma_50) else float(sma_50),
+            "rsi_14": None if pd.isna(rsi_14) else float(rsi_14),
+            "volatility_50": None if pd.isna(vol_50) else float(vol_50),
+            "trend_hint": trend_hint,
+            "n_candles": int(len(df)),
+            "warning": payload.get("warning"),
+            "note": payload.get("note"),
+        }
+
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {str(e)}"}
 
 
 def risk_label(volatility_50: float | None, rsi_14: float | None) -> Dict[str, Any]:
